@@ -58,7 +58,7 @@ What the AI generated vs. what I changed:
 All code is verbatim from the brief. No changes were made; the brief provided the exact test and implementation code to use.
 
 What broke and how I found it:
-RED: Initial pytest run showed `ModuleNotFoundError: No module named 'labdemo.device'` - expected. After implementing device.py, GREEN: 37 tests passed (33 parametrized illegal-transition tests + 4 execute/fault tests + 4 clear/state tests). All format, lint, and type checks passed. The illegal-transition test is generated from the ALLOWED table, so any missing transitions in the state machine are caught automatically.
+RED: Initial pytest run showed `ModuleNotFoundError: No module named 'labdemo.device'` - expected. After implementing device.py, GREEN: 37 tests passed (27 generated illegal-transition cases [36 state pairs minus 9 legal ones] + 10 others: connect 1, successful_run 1, armed_fault 1, simulator_exception 1, clear 1, clear_refused 5). All format, lint, and type checks passed. The illegal-transition test is generated from the ALLOWED table, so any missing transitions in the state machine are caught automatically.
 
 What I learned (one sentence):
 A Protocol boundary (Simulator) decouples the state machine from the hardware driver, making it trivial to inject a spy or fault.
