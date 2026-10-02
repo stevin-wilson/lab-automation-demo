@@ -53,7 +53,8 @@ frame = pd.DataFrame(events, columns=["at", "kind", "command_id", "detail"])
 
 def highlight(row: pd.Series) -> list[str]:
     colour = ROW_COLORS.get(row["kind"], "")
-    return [f"background-color: {colour}" if colour else ""] * len(row)
+    # Dark text is pinned: pale backgrounds are unreadable with the dark theme's light text.
+    return [f"background-color: {colour}; color: #1a1a1a" if colour else ""] * len(row)
 
 
 st.dataframe(frame.style.apply(highlight, axis=1), hide_index=True, width="stretch")
