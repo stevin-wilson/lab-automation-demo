@@ -1,0 +1,10 @@
+{
+  "request": "Move 250 uL from SRC1 A1 to P1 A1",
+  "model": "claude-sonnet-5-5",
+  "origin": "hand-written",
+  "tool_input": {
+    "source_plate": "SRC1",
+    "dest_plate": "P1",
+    "transfers": [{"source_well": "A1", "dest_well": "A1", "volume_ul": 250}]
+  }
+}

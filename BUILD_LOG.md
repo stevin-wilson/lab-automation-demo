@@ -96,3 +96,20 @@ RED: first pytest run on tests/test_api.py gave 14 errors, all ModuleNotFoundErr
 
 What I learned (one sentence):
 Where the idempotency check sits in the request pipeline is itself a behavior that needs its own test, because getting the order wrong looks fine until a resend hits a nearly full well.
+
+## 2026-10-01 - Task 6: AI draft gate (AI1)
+
+Decision / change:
+Added ai_draft.py (the model drafts a worklist through a forced propose_worklist tool call, the same validate() the API uses checks it, a person approves, then it is submitted), tests/test_ai_gate.py (6 tests) and two recordings. The model's schema (DraftWorklist) has no command_id, so the code assigns it and the model cannot choose it. Invalid or malformed output returns exit code 1 and never reaches the approval prompt or the API. Neither recording is a live model response: no ANTHROPIC_API_KEY was set in the environment and there is no .env file, so no live call was made. recordings/column-1-50ul.json (eight 50 µL transfers A1->A1 to H1->H1) and recordings/overdose-250ul.json (one 250 µL transfer) are both hand-written and labeled "origin": "hand-written". The live path (draft_live, --record) is implemented but has not been run.
+
+Why:
+An LLM is useful for turning a plain-English request into a worklist, but it must not be trusted. Putting the same validator and a human approval step between the model and the API keeps the safety rules in code, not in the prompt.
+
+What the AI generated vs. what I changed:
+Code is verbatim from the brief except for the typing of the Anthropic tool definition. ty reported the ignore on dict(block.input) as unused, so I removed it. The ignore on tools=[DRAFT_TOOL] was needed (ty reported invalid-argument-type without it), so instead I typed DRAFT_TOOL as anthropic.types.ToolParam (imported under TYPE_CHECKING) and removed that ignore too; ty is clean with no ignore comments in the file. python-dotenv was already a dependency from Task 5, so pyproject.toml and uv.lock are untouched.
+
+What broke and how I found it:
+RED: first pytest run on tests/test_ai_gate.py gave ModuleNotFoundError: No module named 'labdemo.ai_draft'. GREEN: 6 passed in tests/test_ai_gate.py, 83 passed in the whole suite. ruff format, ruff check and ty check were clean. Offline replay of overdose-250ul exited 1 and printed "Validation FAILED, approval not offered" with the 250 exceeds-max error. In this Git Bash capture the µ in "exceeds max 200 µL" printed as a replacement character (console encoding); the tests check the string in memory and pass.
+
+What I learned (one sentence):
+Leaving command_id out of the model's schema is a structural guarantee, which is stronger than telling the model in a prompt not to choose one.

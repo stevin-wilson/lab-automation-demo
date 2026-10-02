@@ -1,0 +1,51 @@
+{
+  "request": "Transfer 50 uL from SRC1 wells A1 to H1 into P1 wells A1 to H1, one transfer per well",
+  "model": "claude-sonnet-5-5",
+  "origin": "hand-written",
+  "tool_input": {
+    "source_plate": "SRC1",
+    "dest_plate": "P1",
+    "transfers": [
+      {
+        "source_well": "A1",
+        "dest_well": "A1",
+        "volume_ul": 50
+      },
+      {
+        "source_well": "B1",
+        "dest_well": "B1",
+        "volume_ul": 50
+      },
+      {
+        "source_well": "C1",
+        "dest_well": "C1",
+        "volume_ul": 50
+      },
+      {
+        "source_well": "D1",
+        "dest_well": "D1",
+        "volume_ul": 50
+      },
+      {
+        "source_well": "E1",
+        "dest_well": "E1",
+        "volume_ul": 50
+      },
+      {
+        "source_well": "F1",
+        "dest_well": "F1",
+        "volume_ul": 50
+      },
+      {
+        "source_well": "G1",
+        "dest_well": "G1",
+        "volume_ul": 50
+      },
+      {
+        "source_well": "H1",
+        "dest_well": "H1",
+        "volume_ul": 50
+      }
+    ]
+  }
+}
