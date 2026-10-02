@@ -158,3 +158,15 @@ RED: test_live_request_does_not_force_a_tool failed on the tools/tool_choice ass
 
 What I learned (one sentence):
 Tests with a fake client prove your code handles the response shape you imagined, so one real call early is what finds that the request itself is no longer allowed.
+
+## 2026-10-02 - Task 8: traceability test, CI gate, clean-clone check
+
+Decision / change:
+Added tests/test_traceability.py. It reads the scenario IDs from the first column of the table in docs/specs/*.md (the regex `^\| ([A-Z]{1,2}[0-9]+) \|`), collects every `spec` marker from the tests pytest collected in the session, and asserts three things: the spec's ID set is exactly A1, V1, F1, F3, AI1; every spec ID has at least one marked test; every marker names an ID in the spec. The spec status line now reads Implemented (keeping the D8 and D9 amendment notes). README line 4 now names tests/test_traceability.py and says it also fails when a test names a scenario the spec lacks, which is what the test does.
+
+What broke and how I found it:
+RED: I renamed one `@pytest.mark.spec("F1")` in tests/test_api.py to "F9"; the suite then showed 1 failed, 91 passed, with `AssertionError: markers naming unknown scenarios: ['F9']`. I restored it with git checkout. GREEN: 92 passed in the whole suite. The gate as CI runs it: `uv sync --locked`, `uv run pre-commit run --all-files` (all hooks passed) and `uv run pytest` (92 passed). The test reads markers from the whole session, so it only means something when the full suite runs; run alone it would see no markers and fail.
+Clean clone: I cloned the repo into a temp directory, checked out feature/init and followed only the README Quickstart, with no .env. `uv sync` and `uv run pytest` (91 passed, the traceability test was not yet committed at clone time; after copying it in, 92 passed), the API started with the documented command, `demo.py` printed every expected HTTP code and exited 0, the dashboard started headless and /_stcore/health returned ok, `--replay overdose-250ul` exited 1 and `--replay column-1-50ul` showed the worklist, "Not approved. Nothing was sent." and exited 2. The clone revealed no README problem, so the only README change is the traceability sentence above. I stopped both servers, confirmed nothing listened on ports 8000 or 8501, and deleted the clone and its labdemo.db.
+
+What I learned (one sentence):
+A traceability check is only as good as the markers it can see, so it has to run inside the full session, and a rename test (F9) is what proves it can fail.

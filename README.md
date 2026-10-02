@@ -11,7 +11,7 @@ A small **simulated** lab-automation integration: an orchestration API that vali
 1. **Spec**: [docs/specs/2026-09-30-simulated-lab-integration.md](docs/specs/2026-09-30-simulated-lab-integration.md) defines the goals, the acceptance scenarios (A1, V1, F1, F3, AI1) and the architecture.
 2. **Decisions**: [docs/decisions.md](docs/decisions.md) records what was chosen, why, and when to revisit it.
 3. **Plan**: `docs/plans/` holds the test-first implementation plan.
-4. **Failing test, then code**: each scenario has a test marked `@pytest.mark.spec("<ID>")`. A traceability test fails CI if a scenario in the spec has no test.
+4. **Failing test, then code**: each scenario has a test marked `@pytest.mark.spec("<ID>")`. `tests/test_traceability.py` fails CI if a scenario in the spec has no test, or a test names a scenario the spec lacks.
 5. **CI**: every push runs pre-commit (ruff, ty) and pytest from a clean environment.
 
 ## Prerequisites

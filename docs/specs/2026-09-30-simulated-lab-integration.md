@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved 2026-10-01; amended while writing the plan (decision D8) |
+| **Status** | Implemented (amended while writing the plan, decision D8; AI call amended after the first live run, decision D9) |
 | **Author** | Stevin Wilson |
 | **Date** | 2026-09-30 |
 | **Plan** | `docs/plans/2026-09-30-simulated-lab-integration-plan.md` (written after this spec is approved) |
