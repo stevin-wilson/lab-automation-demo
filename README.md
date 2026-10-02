@@ -12,7 +12,8 @@ A small **simulated** lab-automation integration: an orchestration API that vali
 2. **Decisions**: [docs/decisions.md](docs/decisions.md) records what was chosen, why, and when to revisit it.
 3. **Plan**: `docs/plans/` holds the test-first implementation plan.
 4. **Failing test, then code**: each scenario has a test marked `@pytest.mark.spec("<ID>")`. `tests/test_traceability.py` fails CI if a scenario in the spec has no test, or a test names a scenario the spec lacks.
-5. **CI**: every push runs pre-commit (ruff, ty) and pytest from a clean environment.
+5. **CI**: every push and PR runs pre-commit (ruff, ty) and pytest from a clean environment, plus an end-to-end smoke job (`scripts/smoke.py`) that starts the real API and runs `demo.py` and both AI replays against it.
+6. **Releases**: a `v*` tag re-runs CI, smoke-tests the built wheel and publishes a GitHub Release (see [Releasing](#releasing)).
 
 ## Prerequisites
 
@@ -78,7 +79,24 @@ uv run pre-commit install
 uv run pytest
 uv run ruff check
 uv run ty check
+uv run python scripts/smoke.py
 ```
+
+`scripts/smoke.py` is what the CI `e2e` job runs: it starts the API on a free port with a fresh temporary database, runs `demo.py` and both `ai_draft` replays (answering `y` for `column-1-50ul`), checks each exit code, stops the server and prints a PASS/FAIL summary. It does not touch your `labdemo.db`.
+
+## Releasing
+
+The version lives in `pyproject.toml` only. To release:
+
+```
+uv version --bump minor        # or patch; commit the change and merge it to main
+git tag v0.2.0                 # must equal "v" + the pyproject.toml version
+git push origin v0.2.0
+```
+
+The tag runs `.github/workflows/release.yml`. It re-runs CI, fails if the tag does not match the version or the commit is not on `main`, builds the wheel and sdist with `uv build`, runs `scripts/smoke.py` against an API served from the built wheel, and then publishes a GitHub Release with both files attached. The wheel holds the `labdemo` package. The full demo (dashboard, `demo.py`, recordings) runs from the release's source archive. There is no container image or hosted deployment (decision D10).
+
+Repo setting (manual, once): in GitHub **Settings → Branches**, protect `main` by requiring a pull request and the `check` and `e2e` status checks.
 
 ## Project layout
 
@@ -94,12 +112,14 @@ uv run ty check
 | `dashboard.py` | A read-only Streamlit status page showing device state and the event log. |
 | `demo.py` | A scripted run through A1, V1, F1, F3 against a running API. |
 | `recordings/` | Recorded LLM responses used for offline replay and as test fixtures. |
+| `scripts/smoke.py` | The end-to-end smoke check run by CI and the release workflow. |
+| `.github/` | CI (`ci.yml`), the tag-driven release (`release.yml`) and Dependabot. |
 | `tests/` | The pytest suite. No test calls an external service (the dashboard tests connect to a refused loopback port). |
 | `docs/` | The spec, the implementation plan and the decision records. |
 
 ## Sustainability: built in a weekend, still maintainable
 
-- **Quality gates from the first commit:** pre-commit (ruff, ty) and CI on every push and PR.
+- **Quality gates from the first commit:** pre-commit (ruff, ty) and CI on every push and PR, including an end-to-end smoke test against a real API process. Releases are only published after the same gate passes and the built wheel passes the smoke test. Dependabot keeps actions and `uv.lock` current.
 - **Tests that document behavior:** each acceptance scenario is a named test with an ID, and a traceability test fails CI if the spec and the tests drift apart.
 - **Reproducible environment:** `uv.lock` is committed and the Python version is pinned, so a fresh clone is one command.
 - **Clear boundaries:** validation is a pure function, the state machine is a small table, and the simulator sits behind the `Simulator` protocol, so a vendor SDK replaces one class.

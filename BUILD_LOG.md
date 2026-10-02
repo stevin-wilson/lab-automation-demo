@@ -189,3 +189,20 @@ RED (new and changed tests run before the code): 8 failed and 30 passed across t
 
 What I learned (one sentence):
 A doc sentence like "the badge shows NEEDS_HUMAN" is a claim about timing, and a one-second demo with a manual refresh button cannot back it.
+
+## 2026-10-02 - CI/CD: end-to-end smoke job and tagged releases
+
+Decision / change:
+Implemented docs/plans/2026-10-02-ci-cd-plan.md. Added scripts/smoke.py (starts a real uvicorn process on a free port with a temporary database, runs demo.py and both ai_draft replays, checks exit codes 0, 1 and 0, stops the server). CI now has a parallel `e2e` job that runs it, plus explicit read-only token permissions, cancel-superseded-runs concurrency, timeouts, uv and pre-commit caches, and a `workflow_call` trigger. Added release.yml (a `v*` tag re-runs CI, checks tag == pyproject version and that the commit is on main, `uv build`, smoke-tests an API served from the built wheel, `gh release create` with both files) and dependabot.yml (actions and uv, weekly, grouped). Recorded the choice as D10 and updated spec §9 and §10, the README and .gitignore (`dist/`).
+
+Why:
+CI ran pre-commit and pytest only. Nothing exercised the system the way the README tells people to run it (a real server process with demo.py and ai_draft as clients), and there was no versioned release. The author chose tagged releases over a container or a hosted deploy.
+
+What the AI generated vs. what I changed:
+Two departures from the plan, both found while running it. The default server command is `sys.executable -m uvicorn` rather than a nested `uv run uvicorn`, and readiness is polled on `GET /device` instead of `/docs`, which also proves the device connected. The server is started from the repo root, not the temp directory (see below).
+
+What broke and how I found it:
+Source mode passed on the first local run on Windows (PASS for all three steps). A negative check, expecting exit 0 for the overdose replay, made the script exit 1 with that step marked FAIL, and I restored the file. The wheel mode first failed with "Distribution not found at file:///.../Temp/tmp.../dist/labdemo-0.1.0-py3-none-any.whl", because the server ran with the temp directory as its working directory and the wheel path was relative. Starting it from the repo root fixed that: the package lives under src/, so uvicorn still imports labdemo from the wheel. That run passed but left three uvicorn/python processes alive, because on Windows terminating `uv run` does not stop its child. I killed them by hand and made smoke.py stop the whole tree (`taskkill /T` on Windows, a new session plus `killpg` on POSIX). After that both modes passed and no processes were left. ty rejected a `**kwargs` dict passed to Popen, so the call now uses `start_new_session` directly. actionlint (run through uvx, not added to the project) reports no problems in either workflow. The workflows have not run on GitHub yet: they run on the next push, and the release workflow only when a tag is pushed.
+
+What I learned (one sentence):
+Smoke-testing the built wheel instead of the source tree only proves something if the source tree cannot leak in, which the src/ layout guarantees here.

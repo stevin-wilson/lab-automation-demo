@@ -209,7 +209,9 @@ Variables are read from the environment or `.env` (loaded with python-dotenv). `
 - **uv** handles the Python version (3.12, pinned in `.python-version`), dependencies and `uv.lock`, which is committed.
 - **ruff** handles linting and formatting. **ty** handles type checking. Both are configured in `pyproject.toml`.
 - **pre-commit** runs ruff, ruff-format, `ty check` and the hygiene hooks.
-- **CI** (`.github/workflows/ci.yml`), on push and PR: `uv sync --locked`, then `uv run pre-commit run --all-files`, then `uv run pytest`.
+- **CI** (`.github/workflows/ci.yml`), on a push to any branch and on PRs, runs two parallel jobs. `check` runs `uv sync --locked`, then `uv run pre-commit run --all-files`, then `uv run pytest`. `e2e` runs `scripts/smoke.py`: it starts a real `uvicorn` process on a fresh temporary database, runs `demo.py` (must exit 0), `ai_draft --replay overdose-250ul` (must exit 1, not offered for approval) and `ai_draft --replay column-1-50ul` with approval (must exit 0), then stops the server. Superseded runs on the same ref are cancelled.
+- **Release** (`.github/workflows/release.yml`), on a `v*` tag: re-runs CI, checks that the tag equals `v` + the `pyproject.toml` version and that the tagged commit is on `main`, runs `uv build`, runs `scripts/smoke.py` against an API served from the built wheel, then publishes a GitHub Release with the wheel and sdist attached (D10). There is no container image and no hosted deployment.
+- **Dependabot** (`.github/dependabot.yml`) opens weekly grouped PRs for GitHub Actions and `uv.lock`, and CI gates them like any other PR.
 
 ## 10. Key decisions
 
@@ -223,6 +225,7 @@ Full records are in [`docs/decisions.md`](../decisions.md).
 | State machine | Hand-written transition table | The number of states grows large |
 | LLM integration | Plain Anthropic SDK + a single tool call (`tool_choice: auto` plus an instruction) | Multi-step agent flows. Then use a LangGraph graph with an interrupt-based human node. |
 | Simulator | PyLabRobot simulated backend | Swap for a real backend per instrument |
+| Delivery | `v*` tag publishes a smoke-tested wheel and sdist to GitHub Releases (D10) | Containerizing. Then also push an image to GHCR. |
 
 ## 11. Out of scope, in production priority order
 
