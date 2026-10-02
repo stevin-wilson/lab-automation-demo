@@ -121,12 +121,12 @@ Also true today:
 - **Retries and command IDs.** A resend of any known `command_id` returns the stored record and never re-executes, whether the command is `done`, `failed` or `in_progress`. Recovery after a failure is a human clear plus a **new** `command_id`.
 - **Restart behavior.** Device state is not persisted across an API restart; the API starts in `IDLE` again. An `in_progress` command left behind by a crash is never retried and needs a human to look at it.
 - **Persistence failures.** If writing a transition event to SQLite fails after the device state has already changed, the device can be left `BUSY` or `ERROR`, or a command left `in_progress`, until the API restarts. A request cancelled mid-transfer also leaves the device `BUSY`. `UNKNOWN_OUTCOME` is the state meant for that case, but it is modeled and not exercised.
-- **Recordings are hand-written.** Both files in `recordings/` have `origin: hand-written`. The live `--record` path has never been run against the real Anthropic API; it was checked against the SDK and a mocked transport only. Re-record with a real key before relying on it.
+- **Recordings are hand-written, and the live path is untested.** Both files in `recordings/` have `origin: hand-written`. The live path (`draft_live`, used by `--record`) is not covered by any automated test, and no live recording exists yet. Re-record with a real key and check the result before relying on it.
 - **Dashboard.** It is covered by one automated test (the unreachable-API banner). Its rendering against a live API is a manual check.
 
 ## Troubleshooting
 
-- **Port 8000 is in use.** Start the API on another port, `uv run uvicorn labdemo.api:create_app --factory --port 8001`, and point the other programs at it by setting `LABDEMO_API_URL=http://127.0.0.1:8001` (in the environment or `.env`).
+- **Port 8000 is in use.** Start the API on another port, `uv run uvicorn labdemo.api:create_app --factory --port 8001`, and point the dashboard, demo and `ai_draft` at it. In PowerShell: `$env:LABDEMO_API_URL = "http://127.0.0.1:8001"`. In bash or zsh: `export LABDEMO_API_URL=http://127.0.0.1:8001`. Or put `LABDEMO_API_URL=http://127.0.0.1:8001` in `.env`. A variable already set in the environment wins over `.env`.
 - **The dashboard shows "Cannot reach the API at ...".** The API is not running or `LABDEMO_API_URL` points at the wrong place. Start the API (terminal 1) and press Refresh.
 - **`demo.py` says the device is not `IDLE`.** A previous run left it in `NEEDS_HUMAN`. Restart the API, or `POST /device/clear`.
 - **Missing API key.** Live mode prints that `ANTHROPIC_API_KEY` is not set and exits with code 4. Use `--replay NAME` for the offline demo, or set the key in `.env`.

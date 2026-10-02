@@ -5,6 +5,9 @@ import os
 import httpx
 import pandas as pd
 import streamlit as st
+from dotenv import load_dotenv
+
+load_dotenv()
 
 API_URL = os.environ.get("LABDEMO_API_URL", "http://127.0.0.1:8000")
 STATE_COLORS = {

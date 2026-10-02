@@ -130,3 +130,14 @@ RED: tests/test_dashboard.py failed with FileNotFoundError because dashboard.py 
 
 What I learned (one sentence):
 A test framework's default timeout is part of the test, and a 3 second limit on a cold import is a flaky test waiting to happen.
+
+## 2026-10-01 - Task 7 review fixes: dotenv in dashboard and demo, README accuracy
+
+Decision / change:
+dashboard.py and demo.py now call load_dotenv() before reading LABDEMO_API_URL, so the README and spec section 7 claim (environment or .env) is true for them as it already was for the API and ai_draft. Two tests in tests/test_dashboard.py copy the script next to a temporary .env (load_dotenv searches from the script's own directory, not the working directory) and check the unreachable-API banner text and demo.API_URL. The README's recordings limitation no longer claims any SDK or mocked-transport check; it says only that both recordings are hand-written and that draft_live has no automated test. README troubleshooting now shows how to set LABDEMO_API_URL in PowerShell and bash.
+
+What broke and how I found it:
+A reviewer found that the README said .env was read by the dashboard and demo when it was not, and that my README claimed a mocked-transport check that nothing in the repo supports. RED: the two new tests failed (banner and API_URL showed http://127.0.0.1:8000 instead of http://127.0.0.1:9). GREEN: 3 passed in tests/test_dashboard.py, 89 passed in the whole suite; ruff format, ruff check and ty check clean.
+
+What I learned (one sentence):
+A documentation claim about configuration is a behavior, and it needs a test just like code does.
