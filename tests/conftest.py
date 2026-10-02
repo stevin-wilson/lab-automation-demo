@@ -41,7 +41,7 @@ def spy() -> SpySimulator:
 
 @pytest.fixture
 def client(tmp_path, spy: SpySimulator) -> Iterator[TestClient]:
-    from labdemo.api import create_app  # ty: ignore[unresolved-import]  # api.py lands in Task 3
+    from labdemo.api import create_app
 
     with TestClient(create_app(str(tmp_path / "test.db"), spy)) as test_client:
         yield test_client

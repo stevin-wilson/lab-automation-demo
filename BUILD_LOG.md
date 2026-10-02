@@ -79,3 +79,20 @@ RED: Initial pytest run showed `ModuleNotFoundError: No module named 'labdemo.le
 
 What I learned (one sentence):
 SQLite's row factory and context managers make it trivial to build a durable, transactional command ledger that integrates naturally with Pydantic models.
+
+## 2026-10-01 - Task 5: Orchestrator API (A1, V1, F1, F3)
+
+Decision / change:
+Added api.py (FastAPI app factory `create_app`) and tests/test_api.py (14 tests). POST /commands checks in a fixed order: ledger lookup, validation, device state, then execute. A resend of ANY known command_id (done, failed or in_progress) never re-executes and returns the stored record with duplicate=true; reusing a command_id with a different worklist is a 409. Recovery after a failure is a human clear plus a NEW command_id. Also added python-dotenv and a load_dotenv() call at the top of create_app so LABDEMO_DB can come from the environment or .env, and removed the temporary ty ignore on the create_app import in tests/conftest.py.
+
+Why:
+The ledger lookup has to come before validation, otherwise a resend of a command that filled a well would be validated against volumes that already include it and be rejected as an overfill instead of answered as a duplicate. Recording the command before executing means a lost reply can never cause a second run.
+
+What the AI generated vs. what I changed:
+Code is verbatim from the brief, plus the two controller additions (python-dotenv with load_dotenv(), and removing the stale ty ignore in conftest.py).
+
+What broke and how I found it:
+RED: first pytest run on tests/test_api.py gave 14 errors, all ModuleNotFoundError: No module named 'labdemo.api', raised by the client fixture. GREEN: 14 passed in tests/test_api.py, 77 passed in the whole suite. ruff format, ruff check and ty check were clean. Smoke test: uvicorn started and GET /device returned state IDLE; I then stopped the server and deleted labdemo.db.
+
+What I learned (one sentence):
+Where the idempotency check sits in the request pipeline is itself a behavior that needs its own test, because getting the order wrong looks fine until a resend hits a nearly full well.

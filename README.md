@@ -31,4 +31,10 @@ uv run ty check
 
 ## Running the demo
 
-Filled in as features land (API, dashboard, scenarios, AI replay).
+Start the API (an empty `labdemo.db` is created on first run):
+
+```
+uv run uvicorn labdemo.api:create_app --factory
+```
+
+Open <http://127.0.0.1:8000/docs> for the interactive API.
