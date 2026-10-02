@@ -45,3 +45,20 @@ RED: `uv run pytest tests/test_simulator.py -q` gave `ModuleNotFoundError: No mo
 
 What I learned (one sentence):
 PyLabRobot's chatterbox backend gives a real call path and visible output with no hardware, so the adapter stays tiny.
+
+## 2026-10-01 - Task 3: Device state machine (F3, part 1)
+
+Decision / change:
+Implemented device.py with a full state machine (OFFLINE, IDLE, BUSY, ERROR, UNKNOWN_OUTCOME, NEEDS_HUMAN) and execute() that transitions through BUSY and ERROR on fault, landing in NEEDS_HUMAN. Added 37 tests covering illegal transitions, fault injection, and the clear() recovery path.
+
+Why:
+The device owns sequencing and state; execute() combines state transitions with simulator calls to model the real run lifecycle and error handling.
+
+What the AI generated vs. what I changed:
+All code is verbatim from the brief. No changes were made; the brief provided the exact test and implementation code to use.
+
+What broke and how I found it:
+RED: Initial pytest run showed `ModuleNotFoundError: No module named 'labdemo.device'` - expected. After implementing device.py, GREEN: 37 tests passed (33 parametrized illegal-transition tests + 4 execute/fault tests + 4 clear/state tests). All format, lint, and type checks passed. The illegal-transition test is generated from the ALLOWED table, so any missing transitions in the state machine are caught automatically.
+
+What I learned (one sentence):
+A Protocol boundary (Simulator) decouples the state machine from the hardware driver, making it trivial to inject a spy or fault.
