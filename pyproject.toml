@@ -10,7 +10,10 @@ dependencies = [
     "anthropic>=1.11.0",
     "fastapi>=0.142.2",
     "httpx>=0.28.1",
+    "pandas>=3.0.6",
     "pydantic>=2.13.5",
+    "pylabrobot>=0.2.2",
+    "python-dotenv>=1.2.4",
     "streamlit>=1.64.0",
     "uvicorn[standard]>=0.54.0",
 ]
@@ -36,6 +39,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--strict-markers"
 markers = ["spec(id): links a test to an acceptance scenario ID in the spec"]
 
 [tool.ty.environment]

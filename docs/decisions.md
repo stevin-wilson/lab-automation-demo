@@ -27,7 +27,7 @@ One entry per decision, newest at the bottom. Each states what was chosen, why, 
 - **Why:** if the reply is lost, a retry must never dispense twice. Recovery is a human decision plus a new `command_id`.
 
 ## D6. Plain Anthropic SDK for the AI gate
-- **Chosen:** one forced tool call returns a worklist. The same `validate()` and a human prompt gate it.
+- **Chosen:** one tool call returns a worklist (`tool_choice: auto` plus an instruction to call it, see D9). The same `validate()` and a human prompt gate it.
 - **Why:** it is the smallest thing that shows the principle that AI proposes and code and a human decide. Responses are recorded so the demo works offline.
 - **Revisit when:** the flow has multiple steps. Then use a LangGraph graph with an interrupt-based approval node.
 
@@ -39,3 +39,13 @@ One entry per decision, newest at the bottom. Each states what was chosen, why, 
 - **Chosen:** `POST /commands` checks the ledger first. Same worklist → duplicate (`200`). Different worklist → `409`. Only then validate, check state and execute.
 - **Why:** found while writing the plan. Validating first would reject the resend of a command that filled a well (its own volume now counts against the 300 µL cap), when the right answer is "duplicate". Returning the stored result for a different worklist would silently hide a client bug.
 - **Revisit when:** command IDs gain a time-to-live, or the ledger moves to a shared database.
+
+## D9. Do not force the tool call: `tool_choice: auto` plus an instruction
+- **Chosen:** `draft_live` sends one tool, `propose_worklist`, with `tool_choice: {"type": "auto"}` and the system-prompt sentence "Always answer by calling the propose_worklist tool." `max_tokens` is 4096 because adaptive thinking is on by default for this model and uses output tokens.
+- **Why:** the first live run returned HTTP 400 (`tool_choice: type "tool" and "any" are not supported for this model`), so forced tool use is not available on `claude-sonnet-5-5`. If the model ever answers without calling the tool, `draft_live` raises `RuntimeError` and `main` exits 4 with a message pointing to `--replay`.
+- **Revisit when:** structured outputs (`output_config.format`) become preferable to a tool call.
+
+## D10. Releases are version tags that publish a wheel and an sdist to GitHub Releases
+- **Chosen:** pushing a `v*` tag runs `.github/workflows/release.yml`. It re-runs CI, checks the tag against the `pyproject.toml` version and that the commit is on `main`, builds with `uv build`, smoke-tests an API served from the built wheel, and attaches the wheel and sdist to a GitHub Release. No container image and no hosted deployment, so D7 still stands.
+- **Why:** it is the smallest CD that yields a versioned, tested artifact. It needs no hosting account or secret beyond the workflow's own token, and it does not put an unauthenticated API with fault and clear endpoints on the public internet.
+- **Revisit when:** containerizing (spec §11 item 3). Then the release also builds, smoke-tests and pushes an image to GHCR.

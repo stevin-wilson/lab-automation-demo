@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Approved 2026-10-01; amended while writing the plan (decision D8) |
+| **Status** | Implemented (amended while writing the plan, decision D8; AI call amended after the first live run, decision D9) |
 | **Author** | Stevin Wilson |
 | **Date** | 2026-09-30 |
 | **Plan** | `docs/plans/2026-09-30-simulated-lab-integration-plan.md` (written after this spec is approved) |
@@ -151,7 +151,7 @@ The event `kind` is one of: `submitted`, `rejected`, `duplicate`, `refused`, `do
 ### 5.5 AI gate (`ai_draft.py`)
 
 1. The input is a plain-English request, e.g. "Transfer 50 µL from SRC1 A1–H1 into P1 column 1."
-2. Call the Anthropic Messages API (`claude-sonnet-5-5`) with a single forced tool whose `input_schema` is the worklist-without-`command_id` JSON schema. The prompt includes the plate registry and limits.
+2. Call the Anthropic Messages API (`claude-sonnet-5-5`) with a single tool whose `input_schema` is the worklist-without-`command_id` JSON schema, `tool_choice: auto`, and a system-prompt instruction to call it. The prompt includes the plate registry and limits. The request does not force the tool because this model rejects forced tool use (HTTP 400), which the first live run found.
 3. Save the raw response to `recordings/<name>.json` as `{request, model, origin, tool_input}`, where `origin` is `live` or `hand-written` (used for test fixtures). `--replay <name>` loads the file instead of calling the API, and the output is labeled **"recorded response"** plus the origin.
 4. Code assigns the `command_id`, then runs `validate()`.
 5. If there are errors, print them and exit non-zero. **Approval is not offered.**
@@ -209,7 +209,9 @@ Variables are read from the environment or `.env` (loaded with python-dotenv). `
 - **uv** handles the Python version (3.12, pinned in `.python-version`), dependencies and `uv.lock`, which is committed.
 - **ruff** handles linting and formatting. **ty** handles type checking. Both are configured in `pyproject.toml`.
 - **pre-commit** runs ruff, ruff-format, `ty check` and the hygiene hooks.
-- **CI** (`.github/workflows/ci.yml`), on push and PR: `uv sync --locked`, then `uv run pre-commit run --all-files`, then `uv run pytest`.
+- **CI** (`.github/workflows/ci.yml`), on a push to any branch and on PRs, runs two parallel jobs. `check` runs `uv sync --locked`, then `uv run pre-commit run --all-files`, then `uv run pytest`. `e2e` runs `scripts/smoke.py`: it starts a real `uvicorn` process on a fresh temporary database, runs `demo.py` (must exit 0), `ai_draft --replay overdose-250ul` (must exit 1, not offered for approval) and `ai_draft --replay column-1-50ul` with approval (must exit 0), then stops the server. Superseded runs on the same ref are cancelled.
+- **Release** (`.github/workflows/release.yml`), on a `v*` tag: re-runs CI, checks that the tag equals `v` + the `pyproject.toml` version and that the tagged commit is on `main`, runs `uv build`, runs `scripts/smoke.py` against an API served from the built wheel, then publishes a GitHub Release with the wheel and sdist attached (D10). There is no container image and no hosted deployment.
+- **Dependabot** (`.github/dependabot.yml`) opens weekly grouped PRs for GitHub Actions and `uv.lock`, and CI gates them like any other PR.
 
 ## 10. Key decisions
 
@@ -221,8 +223,9 @@ Full records are in [`docs/decisions.md`](../decisions.md).
 | Execution model | Synchronous request | Runs take long enough that timeouts matter. Then switch to `202` + status polling or events. |
 | Store | SQLite | More than one writer process. Then switch to PostgreSQL. |
 | State machine | Hand-written transition table | The number of states grows large |
-| LLM integration | Plain Anthropic SDK + forced tool call | Multi-step agent flows. Then use a LangGraph graph with an interrupt-based human node. |
+| LLM integration | Plain Anthropic SDK + a single tool call (`tool_choice: auto` plus an instruction) | Multi-step agent flows. Then use a LangGraph graph with an interrupt-based human node. |
 | Simulator | PyLabRobot simulated backend | Swap for a real backend per instrument |
+| Delivery | `v*` tag publishes a smoke-tested wheel and sdist to GitHub Releases (D10) | Containerizing. Then also push an image to GHCR. |
 
 ## 11. Out of scope, in production priority order
 

@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Tag matches the project version
+        run: |
+          version="v$(uv version --short)"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match pyproject.toml version $version"
+            exit 1
+          fi
+      - name: Tagged commit is on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - run: uv sync --locked
+      - run: uv build
+      - name: Smoke test the API served from the built wheel
+        run: |
+          wheel=$(ls dist/*.whl)
+          uv run python scripts/smoke.py --server-cmd \
+            "uv run --isolated --no-project --with $wheel uvicorn labdemo.api:create_app --factory --port {port}"
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes \
+            --notes "The wheel contains the \`labdemo\` package (the API and \`ai_draft\`). The full demo (\`dashboard.py\`, \`demo.py\`, \`recordings/\`) runs from the source archive below; see the README. Simulated liquid handler, synthetic data."

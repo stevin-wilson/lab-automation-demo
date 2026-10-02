@@ -4,20 +4,72 @@ A small **simulated** lab-automation integration: an orchestration API that vali
 
 > This is a learning project. It is not a real instrument integration. The liquid handler is a simulator, all data is **synthetic**, and replayed LLM output is labeled **recorded response**.
 
-**Status:** spec and plan stage. The implementation is built test-first, on a feature branch, from the spec below.
+**Status:** the implementation is complete and tested. It was built test-first, on a feature branch, from the spec below.
 
 ## How this repo was built (spec-driven)
 
 1. **Spec**: [docs/specs/2026-09-30-simulated-lab-integration.md](docs/specs/2026-09-30-simulated-lab-integration.md) defines the goals, the acceptance scenarios (A1, V1, F1, F3, AI1) and the architecture.
 2. **Decisions**: [docs/decisions.md](docs/decisions.md) records what was chosen, why, and when to revisit it.
 3. **Plan**: `docs/plans/` holds the test-first implementation plan.
-4. **Failing test, then code**: each scenario has a test marked `@pytest.mark.spec("<ID>")`. A traceability test fails CI if a scenario in the spec has no test.
-5. **CI**: every push runs pre-commit (ruff, ty) and pytest from a clean environment.
+4. **Failing test, then code**: each scenario has a test marked `@pytest.mark.spec("<ID>")`. `tests/test_traceability.py` fails CI if a scenario in the spec has no test, or a test names a scenario the spec lacks.
+5. **CI**: every push and PR runs pre-commit (ruff, ty) and pytest from a clean environment, plus an end-to-end smoke job (`scripts/smoke.py`) that starts the real API and runs `demo.py` and both AI replays against it.
+6. **Releases**: a `v*` tag re-runs CI, smoke-tests the built wheel and publishes a GitHub Release (see [Releasing](#releasing)).
 
 ## Prerequisites
 
 - [uv](https://docs.astral.sh/uv/). It installs the pinned Python (3.12) for you.
 - Optional: an `ANTHROPIC_API_KEY`, only to re-record the AI step.
+
+## Quickstart
+
+Install the dependencies once:
+
+```
+uv sync
+```
+
+Then use three terminals, all from the repo root.
+
+Terminal 1, the API (an empty `labdemo.db` is created on first run; interactive docs at <http://127.0.0.1:8000/docs>):
+
+```
+uv run uvicorn labdemo.api:create_app --factory
+```
+
+Terminal 2, the dashboard (opens at <http://localhost:8501>):
+
+```
+uv run streamlit run dashboard.py
+```
+
+Terminal 3, the scripted demo:
+
+```
+uv run python demo.py
+```
+
+`demo.py` prints one `HTTP <code> (expected <code>)` line per step and ends with `Done.` when every step behaved as expected. Press **Refresh** on the dashboard to see the device state and the event log.
+
+To reset, stop the API and delete `labdemo.db`. Destination wells fill up across runs, so after about six runs the A1 step is rejected as an overfill until you reset.
+
+Both the dashboard and the demo read `LABDEMO_API_URL` (default `http://127.0.0.1:8000`). Configuration can also come from a `.env` file; copy `.env.example` to start.
+
+## Scenarios
+
+| ID | How to trigger it | What you see on the dashboard |
+|---|---|---|
+| A1: valid worklist runs | `demo.py` step "A1: valid worklist runs" (HTTP 200, `status: done`, 8 transfers) | `submitted`, `transition` and `done` rows. The `IDLE` -> `BUSY` -> `IDLE` transitions are visible as `transition` rows in the event log (the run takes about a second, and the badge only updates when you press Refresh). |
+| V1: invalid worklist rejected | `demo.py` step "V1: invalid well and 250 uL rejected" (HTTP 422, one message per problem) | A highlighted `rejected` row. No `submitted` row and no `BUSY`: the device was never contacted. |
+| F1: resend is a duplicate | `demo.py` step "F1: resend of the A1 command is a duplicate" (HTTP 200, `duplicate: true`) | A highlighted `duplicate` row. No second run. |
+| F3: fault, then human clear | `demo.py` steps starting "F3": it arms a fault with `POST /device/fault`, the run fails after one transfer (HTTP 500), the next command gets 409, then `POST /device/clear` returns the device to `IDLE` | `failed` and `refused` rows highlighted. The `transition` rows show the device going to `NEEDS_HUMAN` and, after the clear, back to `IDLE`. The state badge shows the current state, which is normally `IDLE` once the demo has finished. |
+| AI1: AI draft gate | `uv run python -m labdemo.ai_draft --replay overdose-250ul`: the 250 uL transfer is rejected and approval is not offered. `uv run python -m labdemo.ai_draft --replay column-1-50ul`: valid, asks `Approve and submit? [y/N]`, and needs the API running if you answer `y` | `overdose-250ul` sends nothing, so the dashboard does not change. `column-1-50ul` after `y` appears as a normal command in the log. |
+
+## AI step
+
+- Replay is offline: `--replay NAME` loads `recordings/NAME.json` and never touches the network. Output is labeled "recorded response" plus the recording's origin. A fresh live draft is labeled "live response" instead. If you approve and the API is not running, it prints a hint and exits with code 3.
+- The model's output is never trusted. The same `validate()` the API uses checks it (without ledger history, so the API can still return 422 for an overfill after you approve; the API re-validates with ledger volumes), a person approves it, and the code (not the model) assigns the `command_id`.
+- Re-recording needs `ANTHROPIC_API_KEY`. Copy `.env.example` to `.env`, set the key, then run `uv run python -m labdemo.ai_draft --record NAME "your request"`.
+- Each recording carries an `origin` field, `live` or `hand-written`. `recordings/column-1-50ul.json` is a `live` recording (a real call to `claude-sonnet-5-5`, recorded 2026-10-01 local time). `recordings/overdose-250ul.json` is `hand-written`: when asked live for "Move 250 uL from SRC1 A1 to P1 A1", the model split it into two valid 125 uL transfers on its own, so a live overdose could not be captured. The validator is defense in depth for when a model does not self-correct (see the limitations below).
 
 ## Development
 
@@ -27,8 +79,77 @@ uv run pre-commit install
 uv run pytest
 uv run ruff check
 uv run ty check
+uv run python scripts/smoke.py
 ```
 
-## Running the demo
+`scripts/smoke.py` is what the CI `e2e` job runs: it starts the API on a free port with a fresh temporary database, runs `demo.py` and both `ai_draft` replays (answering `y` for `column-1-50ul`), checks each exit code, stops the server and prints a PASS/FAIL summary. It does not touch your `labdemo.db`.
 
-Filled in as features land (API, dashboard, scenarios, AI replay).
+## Releasing
+
+The version lives in `pyproject.toml` only. To release:
+
+```
+uv version --bump minor        # or patch; commit the change and merge it to main
+git tag v0.2.0                 # must equal "v" + the pyproject.toml version
+git push origin v0.2.0
+```
+
+The tag runs `.github/workflows/release.yml`. It re-runs CI, fails if the tag does not match the version or the commit is not on `main`, builds the wheel and sdist with `uv build`, runs `scripts/smoke.py` against an API served from the built wheel, and then publishes a GitHub Release with both files attached. The wheel holds the `labdemo` package. The full demo (dashboard, `demo.py`, recordings) runs from the release's source archive. There is no container image or hosted deployment (decision D10).
+
+Repo setting (manual, once): in GitHub **Settings → Branches**, protect `main` by requiring a pull request and the `check` and `e2e` status checks.
+
+## Project layout
+
+| Path | Responsibility |
+|---|---|
+| `src/labdemo/models.py` | Pydantic models (`Transfer`, `Worklist`) and 96-well plate constants. |
+| `src/labdemo/validation.py` | A pure function that returns a list of human-readable errors for a worklist. |
+| `src/labdemo/device.py` | Owns the device state machine and calls a `Simulator` once per transfer. |
+| `src/labdemo/simulator.py` | The PyLabRobot-backed `Simulator`: pick up tip, aspirate, dispense, drop tip, on the chatterbox backend. |
+| `src/labdemo/ledger.py` | Persists command records (the idempotency key) and an event log in SQLite, and derives how much liquid each destination well already holds. |
+| `src/labdemo/api.py` | HTTP endpoints that run validation, the idempotency check, the state check and execution, in that order. |
+| `src/labdemo/ai_draft.py` | Turns a plain-English request into a worklist with an LLM, validates it and asks a human to approve it. |
+| `dashboard.py` | A read-only Streamlit status page showing device state and the event log. |
+| `demo.py` | A scripted run through A1, V1, F1, F3 against a running API. |
+| `recordings/` | Recorded LLM responses used for offline replay and as test fixtures. |
+| `scripts/smoke.py` | The end-to-end smoke check run by CI and the release workflow. |
+| `.github/` | CI (`ci.yml`), the tag-driven release (`release.yml`) and Dependabot. |
+| `tests/` | The pytest suite. No test calls an external service (the dashboard tests connect to a refused loopback port). |
+| `docs/` | The spec, the implementation plan and the decision records. |
+
+## Sustainability: built in a weekend, still maintainable
+
+- **Quality gates from the first commit:** pre-commit (ruff, ty) and CI on every push and PR, including an end-to-end smoke test against a real API process. Releases are only published after the same gate passes and the built wheel passes the smoke test. Dependabot keeps actions and `uv.lock` current.
+- **Tests that document behavior:** each acceptance scenario is a named test with an ID, and a traceability test fails CI if the spec and the tests drift apart.
+- **Reproducible environment:** `uv.lock` is committed and the Python version is pinned, so a fresh clone is one command.
+- **Clear boundaries:** validation is a pure function, the state machine is a small table, and the simulator sits behind the `Simulator` protocol, so a vendor SDK replaces one class.
+- **Recorded decisions:** `docs/decisions.md` says what was chosen, why, and when to revisit it; `BUILD_LOG.md` records what the AI got wrong.
+- **Stated limitations and next steps:** the next section.
+
+## Known limitations and what I'd do next
+
+In production priority order (spec section 11):
+
+1. Exercise `UNKNOWN_OUTCOME` (reply timeout leads to `NEEDS_HUMAN`, no auto-retry). The state is modeled but nothing triggers it.
+2. Async execution (`202` plus status polling) and a separate edge-agent process per instrument.
+3. Containerize with one Dockerfile, then Compose and Kubernetes.
+4. A mock plate reader, file ingestion and per-well lineage (well to command to run).
+5. Auth, operator identity on `clear`, and a scheduler (for example Cellario or Green Button Go) between the orchestrator and devices.
+6. (Not in the spec's list.) Handle orphaned `in_progress` commands: count them conservatively as possibly dispensed, or refuse to go `IDLE` on startup while any exist (the `UNKNOWN_OUTCOME` path).
+
+Also true today:
+
+- **Retries and command IDs.** A resend of any known `command_id` returns the stored record for the same worklist (a different worklist with the same `command_id` gets 409) and never re-executes, whether the command is `done`, `failed` or `in_progress`. Recovery after a failure is a human clear plus a **new** `command_id`.
+- **Restart behavior.** Device state is not persisted across an API restart; the API starts in `IDLE` again. The process restarts with the device `IDLE`. A command left `in_progress` is never retried or re-run (a resend returns it as `in_progress`). Nothing flags the orphan on the dashboard. Its transfers are not counted toward well volumes (spec section 5.1, `in_progress` commands are ignored), so the 300 uL overfill check can under-count.
+- **Persistence failures.** If writing a transition event to SQLite fails after the device state has already changed, the device can be left `BUSY` or `ERROR`, or a command left `in_progress`, until the API restarts. A request cancelled mid-transfer also leaves the device `BUSY`. `UNKNOWN_OUTCOME` is the state meant for that case, but it is modeled and not exercised.
+- **The live AI path was checked by hand and has no automated live test.** It was run against the real API during development (a first call rejected with HTTP 400, a probe request for 250 uL, and the `--record` run). `column-1-50ul.json` has `origin: live` and is the one call that was recorded, on 2026-10-01 local time; `overdose-250ul.json` has `origin: hand-written` (the model split a live 250 uL request into two valid 125 uL transfers, so no live overdose exists). The rejected first call showed that `claude-sonnet-5-5` rejects forced tool use with HTTP 400, so the request now uses `tool_choice: auto` plus an instruction (decision D9). One automated test checks the request shape against a fake client; nothing in the test suite calls the real API.
+- **Dashboard.** It is covered by automated tests in `tests/test_dashboard.py`: the unreachable-API banner, the elapsed time since the last transition (against a faked API response), and reading the API URL from `.env` for the dashboard and for the demo. The same file checks that `demo.py` fails on a wrong response body and passes against the real app in-process. The dashboard's rendering against a live API (including the row highlighting) is a manual check.
+
+## Troubleshooting
+
+- **Port 8000 is in use.** Start the API on another port, `uv run uvicorn labdemo.api:create_app --factory --port 8001`, and point the dashboard, demo and `ai_draft` at it. In PowerShell: `$env:LABDEMO_API_URL = "http://127.0.0.1:8001"`. In bash or zsh: `export LABDEMO_API_URL=http://127.0.0.1:8001`. Or put `LABDEMO_API_URL=http://127.0.0.1:8001` in `.env`. A variable already set in the environment wins over `.env`.
+- **The dashboard shows "Cannot reach the API at ...".** The API is not running or `LABDEMO_API_URL` points at the wrong place. Start the API (terminal 1) and press Refresh.
+- **`demo.py` says the device is not `IDLE`.** A previous run left it in `NEEDS_HUMAN`. Restart the API, or `POST /device/clear`.
+- **Missing API key.** Live mode prints that `ANTHROPIC_API_KEY` is not set and exits with code 4. Use `--replay NAME` for the offline demo, or set the key in `.env`.
+- **PyLabRobot prints each operation to the console.** That is the simulator (the chatterbox backend), not an error.
+- **A garbled micro sign (`µ`) in a Windows console.** That is the console encoding. The data is correct.
