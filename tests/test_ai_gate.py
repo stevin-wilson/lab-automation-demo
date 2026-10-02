@@ -1,10 +1,13 @@
 import json
 from pathlib import Path
 
+import anthropic
 import httpx
+import httpx2
 import pytest
 
-from labdemo.ai_draft import load_recording, run
+from labdemo import ai_draft
+from labdemo.ai_draft import load_recording, main, run
 
 RECORDINGS = Path(__file__).resolve().parent.parent / "recordings"
 
@@ -79,6 +82,50 @@ def test_api_rejection_is_reported():
 
     assert code == 3
     assert any("422" in line for line in output)
+
+
+@pytest.fixture
+def live_mode(monkeypatch):
+    monkeypatch.setattr(ai_draft, "load_dotenv", lambda: None)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+
+def failing_draft(error):
+    def draft(_request):
+        raise error
+
+    return draft
+
+
+@pytest.mark.spec("AI1")
+def test_unexpected_model_answer_points_to_replay(live_mode, monkeypatch, capsys):
+    monkeypatch.setattr(ai_draft, "draft_live", failing_draft(RuntimeError("boom")))
+
+    assert main(["a request"]) == 4
+
+    assert "--replay" in capsys.readouterr().out
+
+
+@pytest.mark.spec("AI1")
+def test_anthropic_api_error_points_to_replay(live_mode, monkeypatch, capsys):
+    error = anthropic.APIConnectionError(request=httpx2.Request("POST", "http://example.invalid"))
+    monkeypatch.setattr(ai_draft, "draft_live", failing_draft(error))
+
+    assert main(["a request"]) == 4
+
+    output = capsys.readouterr().out
+    assert "--replay" in output
+    assert "Connection error" in output
+
+
+@pytest.mark.spec("AI1")
+def test_missing_api_key_points_to_replay(monkeypatch, capsys):
+    monkeypatch.setattr(ai_draft, "load_dotenv", lambda: None)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    assert main(["a request"]) == 4
+
+    assert "--replay" in capsys.readouterr().out
 
 
 def test_recordings_have_the_documented_shape():

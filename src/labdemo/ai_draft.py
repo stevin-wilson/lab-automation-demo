@@ -152,7 +152,13 @@ def main(argv: list[str] | None = None) -> int:
         if not os.environ.get("ANTHROPIC_API_KEY"):
             print("ANTHROPIC_API_KEY is not set. Use --replay NAME for the offline demo.")
             return 4
-        recording = draft_live(args.request)
+        import anthropic
+
+        try:
+            recording = draft_live(args.request)
+        except (anthropic.APIError, RuntimeError) as exc:
+            print(f"The live draft failed: {exc}. Use --replay NAME for the offline demo.")
+            return 4
         if args.record:
             print(f"Saved {save_recording(args.record, recording)}")
     else:
