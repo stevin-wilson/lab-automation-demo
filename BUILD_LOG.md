@@ -62,3 +62,20 @@ RED: Initial pytest run showed `ModuleNotFoundError: No module named 'labdemo.de
 
 What I learned (one sentence):
 A Protocol boundary (Simulator) decouples the state machine from the hardware driver, making it trivial to inject a spy or fault.
+
+## 2026-10-01 - Task 4: Command ledger (F1, part 1)
+
+Decision / change:
+Implemented ledger.py with SQLite-backed CommandRecord, CommandStatus, EventKind, and Ledger class for idempotent command tracking and event logging. Added 6 comprehensive tests covering command persistence, primary key enforcement, and destination volume derivation.
+
+Why:
+The ledger provides the idempotency key (command_id as PRIMARY KEY) that lets the API safely retry failed worklist submissions without duplicate execution, and records all state transitions and faults for auditability and recovery.
+
+What the AI generated vs. what I changed:
+All code is verbatim from the brief. No changes were made; the brief provided the exact test and implementation code to use.
+
+What broke and how I found it:
+RED: Initial pytest run showed `ModuleNotFoundError: No module named 'labdemo.ledger'` - expected. After implementing ledger.py, GREEN: 6 tests passed. All format, lint, and type checks passed. Tests verify: unknown commands return None, commands are recorded as IN_PROGRESS before execution, command_id is enforced as PRIMARY KEY (IntegrityError on duplicate), records survive database reopening, dest_volumes correctly sums DONE commands plus completed portion of FAILED ones, and events are returned newest-first with optional limit.
+
+What I learned (one sentence):
+SQLite's row factory and context managers make it trivial to build a durable, transactional command ledger that integrates naturally with Pydantic models.
