@@ -114,9 +114,13 @@ def run(
     approve: Callable[[Worklist], bool],
     submit: Callable[[Worklist], httpx.Response],
     out: Callable[[str], None] = print,
+    replayed: bool = True,
 ) -> int:
-    origin = recording.get("origin", "unknown")
-    out(f"[recorded response - origin: {origin} - model: {recording.get('model')}]")
+    if replayed:
+        origin = recording.get("origin", "unknown")
+        out(f"[recorded response - origin: {origin} - model: {recording.get('model')}]")
+    else:
+        out(f"[live response - model: {recording.get('model')}]")
     out(f"Request: {recording.get('request')}")
 
     worklist, errors = review(recording, command_id)
@@ -134,7 +138,12 @@ def run(
         out("Not approved. Nothing was sent.")
         return 2
 
-    response = submit(worklist)
+    try:
+        response = submit(worklist)
+    except httpx.HTTPError as exc:
+        out(f"Could not reach the API: {exc!r}. Nothing was submitted.")
+        out("Is the API running? (LABDEMO_API_URL, default http://127.0.0.1:8000)")
+        return 3
     out(f"API responded {response.status_code}: {response.text}")
     return 0 if response.is_success else 3
 
@@ -158,7 +167,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             recording = draft_live(args.request)
         except (anthropic.APIError, RuntimeError) as exc:
-            print(f"The live draft failed: {exc}. Use --replay NAME for the offline demo.")
+            reason = str(exc).rstrip(".")
+            print(f"The live draft failed: {reason}. Use --replay NAME for the offline demo.")
             return 4
         if args.record:
             print(f"Saved {save_recording(args.record, recording)}")
@@ -174,7 +184,13 @@ def main(argv: list[str] | None = None) -> int:
     def submit(worklist: Worklist) -> httpx.Response:
         return httpx.post(f"{api_url}/commands", json=worklist.model_dump(), timeout=30)
 
-    return run(recording, command_id=f"ai-{stamp}", approve=approve, submit=submit)
+    return run(
+        recording,
+        command_id=f"ai-{stamp}",
+        approve=approve,
+        submit=submit,
+        replayed=bool(args.replay),
+    )
 
 
 if __name__ == "__main__":

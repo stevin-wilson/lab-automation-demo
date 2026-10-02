@@ -4,7 +4,6 @@ from pathlib import Path
 
 import anthropic
 import httpx
-import httpx2
 import pytest
 
 from labdemo import ai_draft
@@ -72,6 +71,42 @@ def test_declined_worklist_is_never_submitted():
 
 
 @pytest.mark.spec("AI1")
+def test_replayed_run_is_labelled_recorded_response():
+    recording = load_recording("column-1-50ul")
+
+    _, output = lines_of(recording, approve=lambda _: False, submit=never)
+
+    assert output[0].startswith("[recorded response - origin: ")
+    assert not any("[live response" in line for line in output)
+
+
+@pytest.mark.spec("AI1")
+def test_fresh_live_run_is_not_labelled_recorded_response():
+    recording = load_recording("column-1-50ul")
+
+    _, output = lines_of(recording, approve=lambda _: False, submit=never, replayed=False)
+
+    assert output[0].startswith("[live response - model: ")
+    assert not any("recorded response" in line for line in output)
+
+
+@pytest.mark.spec("AI1")
+def test_unreachable_api_is_reported_not_a_traceback():
+    recording = load_recording("column-1-50ul")
+
+    def submit(_):
+        raise httpx.ConnectError("connection refused")
+
+    code, output = lines_of(recording, approve=lambda _: True, submit=submit)
+
+    assert code == 3
+    text = " ".join(output)
+    assert "connection refused" in text
+    assert "Is the API running?" in text
+    assert "LABDEMO_API_URL" in text
+
+
+@pytest.mark.spec("AI1")
 def test_api_rejection_is_reported():
     recording = load_recording("column-1-50ul")
 
@@ -89,6 +124,13 @@ def test_api_rejection_is_reported():
 def live_mode(monkeypatch):
     monkeypatch.setattr(ai_draft, "load_dotenv", lambda: None)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+
+class FakeAPIError(anthropic.APIError):
+    """An anthropic.APIError built without HTTP types, so the test needs no transport library."""
+
+    def __init__(self) -> None:
+        Exception.__init__(self, "Connection error.")
 
 
 def failing_draft(error):
@@ -109,14 +151,27 @@ def test_unexpected_model_answer_points_to_replay(live_mode, monkeypatch, capsys
 
 @pytest.mark.spec("AI1")
 def test_anthropic_api_error_points_to_replay(live_mode, monkeypatch, capsys):
-    error = anthropic.APIConnectionError(request=httpx2.Request("POST", "http://example.invalid"))
+    error = FakeAPIError()
     monkeypatch.setattr(ai_draft, "draft_live", failing_draft(error))
 
     assert main(["a request"]) == 4
 
     output = capsys.readouterr().out
     assert "--replay" in output
-    assert "Connection error" in output
+    assert "Connection error. Use --replay" in output
+    assert "error.." not in output
+
+
+@pytest.mark.spec("AI1")
+def test_main_labels_a_live_draft_as_live_and_a_replay_as_recorded(live_mode, monkeypatch, capsys):
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    monkeypatch.setattr(ai_draft, "draft_live", lambda _request: load_recording("column-1-50ul"))
+
+    assert main(["a request"]) == 2
+    assert "[live response - model: " in capsys.readouterr().out
+
+    assert main(["--replay", "column-1-50ul"]) == 2
+    assert "[recorded response - origin: live" in capsys.readouterr().out
 
 
 @pytest.mark.spec("AI1")

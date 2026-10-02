@@ -137,7 +137,7 @@ def create_app(db_path: str | None = None, simulator: Simulator | None = None) -
             device.clear(reason)
         except IllegalTransition as exc:
             return JSONResponse(status_code=409, content={"detail": str(exc)})
-        ledger.add_event(EventKind.CLEARED, detail=f"{request.operator}: {request.note}")
+        ledger.add_event(EventKind.CLEARED, detail=reason)
         return JSONResponse(content={"state": device.state.value})
 
     return app

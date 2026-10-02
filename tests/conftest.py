@@ -34,6 +34,12 @@ class SpySimulator:
         await self.inner.transfer(source_plate, dest_plate, transfer)
 
 
+@pytest.fixture(autouse=True)
+def no_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """create_app must never load the developer's real .env (it holds a secret key) in tests."""
+    monkeypatch.setattr("labdemo.api.load_dotenv", lambda *args, **kwargs: False)
+
+
 @pytest.fixture
 def spy() -> SpySimulator:
     return SpySimulator()

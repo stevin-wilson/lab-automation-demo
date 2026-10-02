@@ -1,4 +1,8 @@
-"""Fails if a scenario ID in the spec has no test, or a test names an ID the spec lacks."""
+"""Fails if a scenario ID in the spec has no test, or a test names an ID the spec lacks.
+
+Only meaningful in a full-suite run: run alone or with -k it sees few markers and reports every
+scenario as untested.
+"""
 
 import re
 from pathlib import Path
@@ -16,6 +20,8 @@ def test_every_scenario_has_a_test_and_every_marker_a_scenario(request):
         marker.args[0] for item in request.session.items for marker in item.iter_markers("spec")
     }
     ids = spec_ids()
-    assert ids == {"A1", "V1", "F1", "F3", "AI1"}, "scenario table in the spec changed"
+    assert ids == {"A1", "V1", "F1", "F3", "AI1"}, (
+        "scenario table in the spec changed; if that was intentional, update the expected set here"
+    )
     assert ids - covered == set(), f"scenarios with no test: {sorted(ids - covered)}"
     assert covered - ids == set(), f"markers naming unknown scenarios: {sorted(covered - ids)}"

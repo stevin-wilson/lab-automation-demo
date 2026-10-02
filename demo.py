@@ -7,6 +7,8 @@ fill up, and after about six runs the A1 step is rejected as an overfill.
 import os
 import sys
 import time
+from collections.abc import Callable
+from typing import Any
 
 import httpx
 from dotenv import load_dotenv
@@ -27,11 +29,25 @@ def worklist(suffix: str, transfers: list[tuple[str, str, float]]) -> dict:
     }
 
 
-def show(title: str, response: httpx.Response, expected: int) -> None:
+def show(
+    title: str,
+    response: httpx.Response,
+    expected: int,
+    check: Callable[[Any], bool] | None = None,
+) -> None:
+    """Print a step; record a failure on a wrong status code or when check(body) is not true."""
     print(f"\n=== {title} ===")
     print(f"HTTP {response.status_code} (expected {expected})")
     print(response.text)
-    if response.status_code != expected:
+    ok = response.status_code == expected
+    if ok and check is not None:
+        try:
+            ok = bool(check(response.json()))
+        except (ValueError, KeyError, TypeError):
+            ok = False
+        if not ok:
+            print("Response body was not as expected.")
+    if not ok:
         failures.append(title)
 
 
@@ -59,6 +75,7 @@ def main() -> int:
             "F1: resend of the A1 command is a duplicate, no second run",
             http.post("/commands", json=a1),
             200,
+            lambda body: body["duplicate"] is True,
         )
 
         http.post("/device/fault")
@@ -68,7 +85,12 @@ def main() -> int:
             http.post("/commands", json=worklist("f3", column_2)),
             500,
         )
-        show("F3: device state", http.get("/device"), 200)
+        show(
+            "F3: device state is NEEDS_HUMAN",
+            http.get("/device"),
+            200,
+            lambda body: body["state"] == "NEEDS_HUMAN",
+        )
         show(
             "F3: new command refused while NEEDS_HUMAN",
             http.post("/commands", json=worklist("next", column_1[:1])),

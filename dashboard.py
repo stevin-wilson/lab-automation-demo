@@ -1,11 +1,14 @@
 """Read-only status page: device state and the event log. Simulator and synthetic data only."""
 
 import os
+from datetime import UTC, datetime
 
 import httpx
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
+
+from labdemo.timefmt import elapsed_since
 
 load_dotenv()
 
@@ -39,7 +42,10 @@ except (httpx.HTTPError, ValueError, KeyError) as exc:
 
 state = device["state"]
 st.markdown(f"### Device: :{STATE_COLORS.get(state, 'gray')}[{state}]")
-st.write(f"In this state since {device['since']}. Fault armed: {device['armed_fault']}.")
+elapsed = elapsed_since(device["since"], datetime.now(UTC))
+st.write(
+    f"In this state for {elapsed}, since {device['since']}. Fault armed: {device['armed_fault']}."
+)
 
 st.subheader("Event log (newest first)")
 frame = pd.DataFrame(events, columns=["at", "kind", "command_id", "detail"])

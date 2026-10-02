@@ -1,4 +1,9 @@
 import pytest
+from fastapi.testclient import TestClient
+
+from labdemo.api import create_app
+from labdemo.ledger import Ledger
+from labdemo.models import Worklist
 
 
 def body(command_id: str, *transfers: tuple[str, str, float], dest: str = "P1") -> dict:
@@ -203,8 +208,45 @@ def test_partial_run_volumes_are_remembered(client):
 
 
 @pytest.mark.spec("F3")
+@pytest.mark.parametrize(
+    ("clear_body", "expected_detail"),
+    [
+        ({"operator": "stevin"}, "cleared by stevin"),
+        ({"operator": "stevin", "note": ""}, "cleared by stevin"),
+        ({"operator": "stevin", "note": "checked deck"}, "cleared by stevin: checked deck"),
+    ],
+)
+def test_cleared_event_detail_has_no_dangling_colon(client, clear_body, expected_detail):
+    client.post("/device/fault")
+    client.post("/commands", json=body("cmd-f", ("A1", "A1", 50.0), ("B1", "B1", 50.0)))
+
+    assert client.post("/device/clear", json=clear_body).status_code == 200
+
+    (cleared,) = [e for e in client.get("/log").json()["events"] if e["kind"] == "cleared"]
+    assert cleared["detail"] == expected_detail
+
+
+@pytest.mark.spec("F3")
 def test_clear_is_refused_when_nothing_needs_clearing(client):
     response = client.post("/device/clear", json={"operator": "stevin"})
 
     assert response.status_code == 409
     assert client.get("/device").json()["state"] == "IDLE"
+
+
+@pytest.mark.spec("F1")
+def test_resend_of_an_in_progress_command_is_a_duplicate_and_never_runs(tmp_path, spy):
+    """A crash can leave a command in_progress. Spec 5.3: a resend in any status never re-runs."""
+    db = str(tmp_path / "crashed.db")
+    payload = body("cmd-crash", ("A1", "A1", 50.0))
+    ledger = Ledger(db)
+    ledger.start_command(Worklist(**payload))
+    ledger.close()
+
+    with TestClient(create_app(db, spy)) as restarted:
+        response = restarted.post("/commands", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["duplicate"] is True
+    assert response.json()["status"] == "in_progress"
+    assert spy.calls == []
