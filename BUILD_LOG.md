@@ -141,3 +141,20 @@ A reviewer found that the README said .env was read by the dashboard and demo wh
 
 What I learned (one sentence):
 A documentation claim about configuration is a behavior, and it needs a test just like code does.
+
+## 2026-10-01 - Task 6b: first live run of the AI gate
+
+Decision / change:
+The user added a real API key to the gitignored .env and the live path was run for the first time. It failed with HTTP 400: tool_choice of type "tool" or "any" is not supported by claude-sonnet-5-5. Changed draft_live to tool_choice {"type": "auto"}, added the sentence "Always answer by calling the propose_worklist tool." to SYSTEM_PROMPT, and raised max_tokens from 1024 to 4096 (adaptive thinking is on by default for this model and uses output tokens). Added decision D9, corrected spec section 5.5 and D6, and corrected the README. recordings/column-1-50ul.json is now a genuine live recording (origin live, 8 transfers of 50 uL, A1->A1 to H1->H1), made with `--record` through the real code path; replaying it offline prints origin live. recordings/overdose-250ul.json stays hand-written.
+
+Why:
+The Task 6 graceful-failure path (exit 4 pointing to --replay) worked as designed, but the forced tool call my code (and the brief) used does not exist on this model. A mock-only test suite could never have found that.
+
+What the AI generated vs. what I changed:
+The forced tool_choice came from the brief. I replaced it with auto plus an instruction, and the controller had already verified that request against the real API. Two regression tests (fake anthropic.Anthropic, no network) pin the request shape: tool_choice is auto, the tool is propose_worklist, max_tokens is at least 4096, the system prompt names the tool, and a response with no tool_use block raises RuntimeError.
+
+What broke and how I found it:
+RED: test_live_request_does_not_force_a_tool failed on the tools/tool_choice assertion (1 failed, 10 passed); the no-tool-block test already passed because that guard existed. GREEN: 11 passed in tests/test_ai_gate.py, 91 passed in the whole suite. Finding: asked live for "Move 250 uL from SRC1 A1 to P1 A1", the model split it into two valid 125 uL transfers by itself, so a live overdose could not be captured and the overdose fixture stays hand-written. The validator is defense in depth for when a model does not self-correct. No automated test calls the real API.
+
+What I learned (one sentence):
+Tests with a fake client prove your code handles the response shape you imagined, so one real call early is what finds that the request itself is no longer allowed.

@@ -37,7 +37,8 @@ SYSTEM_PROMPT = f"""You draft liquid-handler worklists for a simulated lab.
 Plates: source plate SRC1 and destination plate P1, both 96-well (rows A-H, columns 1-12).
 Limits: each transfer is {MIN_VOLUME_UL:g}-{MAX_VOLUME_UL:g} uL;
 a destination well holds at most {MAX_WELL_VOLUME_UL:g} uL in total.
-Call propose_worklist exactly once. Do not invent plates or wells."""
+Call propose_worklist exactly once. Do not invent plates or wells.
+Always answer by calling the propose_worklist tool."""
 
 
 class DraftWorklist(BaseModel):
@@ -72,16 +73,16 @@ def save_recording(name: str, recording: dict[str, Any]) -> Path:
 
 
 def draft_live(request: str) -> dict[str, Any]:
-    """Call the model once, forcing it to answer through the propose_worklist tool."""
+    """Call the model once and read its answer from the propose_worklist tool call."""
     import anthropic
 
     client = anthropic.Anthropic()
     response = client.messages.create(
         model=MODEL,
-        max_tokens=1024,
+        max_tokens=4096,
         system=SYSTEM_PROMPT,
         tools=[DRAFT_TOOL],
-        tool_choice={"type": "tool", "name": "propose_worklist"},
+        tool_choice={"type": "auto"},
         messages=[{"role": "user", "content": request}],
     )
     for block in response.content:

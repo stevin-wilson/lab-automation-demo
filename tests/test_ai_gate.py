@@ -1,4 +1,5 @@
 import json
+import types
 from pathlib import Path
 
 import anthropic
@@ -126,6 +127,60 @@ def test_missing_api_key_points_to_replay(monkeypatch, capsys):
     assert main(["a request"]) == 4
 
     assert "--replay" in capsys.readouterr().out
+
+
+DRAFT = {
+    "source_plate": "SRC1",
+    "dest_plate": "P1",
+    "transfers": [{"source_well": "A1", "dest_well": "A1", "volume_ul": 50}],
+}
+
+
+def fake_anthropic(monkeypatch, content):
+    """Replace anthropic.Anthropic with a fake that records the request. No network."""
+    calls: list[dict] = []
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return types.SimpleNamespace(content=content)
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.messages = FakeMessages()
+
+    monkeypatch.setattr(anthropic, "Anthropic", FakeClient)
+    return calls
+
+
+@pytest.mark.spec("AI1")
+def test_live_request_does_not_force_a_tool(monkeypatch):
+    block = types.SimpleNamespace(type="tool_use", input=DRAFT)
+    calls = fake_anthropic(monkeypatch, [block])
+
+    recording = ai_draft.draft_live("move 50 uL")
+
+    (kwargs,) = calls
+    # claude-sonnet-5-5 rejects tool_choice of type "tool" or "any" with HTTP 400.
+    assert kwargs.get("tool_choice", {"type": "auto"}) == {"type": "auto"}
+    assert [t["name"] for t in kwargs["tools"]] == ["propose_worklist"]
+    assert kwargs["max_tokens"] >= 4096
+    assert "propose_worklist" in kwargs["system"]
+    assert kwargs["messages"] == [{"role": "user", "content": "move 50 uL"}]
+    assert recording == {
+        "request": "move 50 uL",
+        "model": ai_draft.MODEL,
+        "origin": "live",
+        "tool_input": DRAFT,
+    }
+
+
+@pytest.mark.spec("AI1")
+def test_live_response_without_a_tool_call_raises(monkeypatch):
+    fake_anthropic(monkeypatch, [types.SimpleNamespace(type="text", text="no tool")])
+
+    with pytest.raises(RuntimeError, match="did not call propose_worklist"):
+        ai_draft.draft_live("move 50 uL")
 
 
 def test_recordings_have_the_documented_shape():

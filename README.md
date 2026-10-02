@@ -68,7 +68,7 @@ Both the dashboard and the demo read `LABDEMO_API_URL` (default `http://127.0.0.
 - Replay is offline: `--replay NAME` loads `recordings/NAME.json` and never touches the network. Output is labeled "recorded response" plus the recording's origin.
 - The model's output is never trusted. The same `validate()` the API uses checks it, a person approves it, and the code (not the model) assigns the `command_id`.
 - Re-recording needs `ANTHROPIC_API_KEY`. Copy `.env.example` to `.env`, set the key, then run `uv run python -m labdemo.ai_draft --record NAME "your request"`.
-- Each recording carries an `origin` field, `live` or `hand-written`. Both recordings in `recordings/` are currently `hand-written` (see the limitations below).
+- Each recording carries an `origin` field, `live` or `hand-written`. `recordings/column-1-50ul.json` is a `live` recording (one real call to `claude-sonnet-5-5`, recorded 2026-10-01). `recordings/overdose-250ul.json` is `hand-written`: when asked live for "Move 250 uL from SRC1 A1 to P1 A1", the model split it into two valid 125 uL transfers on its own, so a live overdose could not be captured. The validator is defense in depth for when a model does not self-correct (see the limitations below).
 
 ## Development
 
@@ -121,8 +121,8 @@ Also true today:
 - **Retries and command IDs.** A resend of any known `command_id` returns the stored record and never re-executes, whether the command is `done`, `failed` or `in_progress`. Recovery after a failure is a human clear plus a **new** `command_id`.
 - **Restart behavior.** Device state is not persisted across an API restart; the API starts in `IDLE` again. An `in_progress` command left behind by a crash is never retried and needs a human to look at it.
 - **Persistence failures.** If writing a transition event to SQLite fails after the device state has already changed, the device can be left `BUSY` or `ERROR`, or a command left `in_progress`, until the API restarts. A request cancelled mid-transfer also leaves the device `BUSY`. `UNKNOWN_OUTCOME` is the state meant for that case, but it is modeled and not exercised.
-- **Recordings are hand-written, and the live path is untested.** Both files in `recordings/` have `origin: hand-written`. The live path (`draft_live`, used by `--record`) is not covered by any automated test, and no live recording exists yet. Re-record with a real key and check the result before relying on it.
-- **Dashboard.** It is covered by one automated test (the unreachable-API banner). Its rendering against a live API is a manual check.
+- **The live AI path has one manual run and no automated live test.** `column-1-50ul.json` has `origin: live` and was recorded once against the real API on 2026-10-01; `overdose-250ul.json` has `origin: hand-written` (the model split a live 250 uL request into two valid 125 uL transfers, so no live overdose exists). That first live run found that `claude-sonnet-5-5` rejects forced tool use with HTTP 400, so the request now uses `tool_choice: auto` plus an instruction (decision D9). One automated test checks the request shape against a fake client; nothing in the test suite calls the real API.
+- **Dashboard.** It is covered by three automated tests in `tests/test_dashboard.py` (the unreachable-API banner, and reading the API URL from `.env` for the dashboard and for the demo). Its rendering against a live API is a manual check.
 
 ## Troubleshooting
 
