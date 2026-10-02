@@ -113,3 +113,20 @@ RED: first pytest run on tests/test_ai_gate.py gave ModuleNotFoundError: No modu
 
 What I learned (one sentence):
 Leaving command_id out of the model's schema is a structural guarantee, which is stronger than telling the model in a prompt not to choose one.
+
+## 2026-10-01 - Task 7: Dashboard, demo script and run documentation
+
+Decision / change:
+Added dashboard.py (read-only Streamlit page: state badge, since-time, armed fault, event table with rejected/refused/failed/duplicate rows highlighted, Refresh button, error banner when the API is unreachable), demo.py (scripted A1, V1, F1, F3 run), tests/test_dashboard.py (1 test) and a full README rewrite (quickstart, scenarios, layout, sustainability, known limitations, troubleshooting). The README limitations section states the honest gaps: device state is not persisted across a restart, a crash can leave a command in_progress, a failed SQLite write or a cancelled request can leave the device BUSY/ERROR, UNKNOWN_OUTCOME is modeled but not exercised, and both recordings are hand-written because the live --record path has never been run against the real Anthropic API.
+
+Why:
+The spec asks for a status view (section 5.6) and for a README that takes a new user from clone to a running demo. The demo script makes the four control-side behaviors visible in about one second, and the README states what is not done.
+
+What the AI generated vs. what I changed:
+Code is from the brief with two changes. (1) The dashboard test calls .run(timeout=30) instead of .run(): the first full-suite run failed with "AppTest script run timed out after 3(s)", because AppTest's default 3 second limit was exceeded on a cold import of streamlit and pandas; the same test passed when rerun alone and in later full runs. (2) In demo.py the brief's "# type: ignore[union-attr]" was flagged by ty (unresolved-attribute), so I used "# ty: ignore[unresolved-attribute]" as the brief allows; a hasattr guard did not work because ty then reported call-non-callable. width="stretch" was accepted by the installed Streamlit, so use_container_width was not needed.
+
+What broke and how I found it:
+RED: tests/test_dashboard.py failed with FileNotFoundError because dashboard.py did not exist. GREEN: 87 passed in the whole suite (86 before this task plus 1), with ruff format, ruff check and ty check clean. Real run: uvicorn and streamlit (headless, port 8501) in the background, dashboard health check returned ok, and demo.py exited 0 with every step at its expected HTTP code (200, 422, 200 duplicate, 500, 200, 409, 200). I have no browser here, so I did not look at the dashboard and the highlighting is NOT visually verified; as a substitute, Streamlit's AppTest against the live API rendered without an exception and showed "Device: IDLE" and 16 event rows. Screenshots are still to be taken by hand. Both servers were stopped, a port check found nothing listening on 8000 or 8501, and labdemo.db was deleted. I also ran the two documented ai_draft replays: overdose-250ul exited 1 with the validation error, column-1-50ul showed the table and, with "n" piped in, exited 2 with "Not approved. Nothing was sent."
+
+What I learned (one sentence):
+A test framework's default timeout is part of the test, and a 3 second limit on a cold import is a flaky test waiting to happen.
