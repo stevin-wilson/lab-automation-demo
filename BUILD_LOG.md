@@ -206,3 +206,20 @@ Source mode passed on the first local run on Windows (PASS for all three steps).
 
 What I learned (one sentence):
 Smoke-testing the built wheel instead of the source tree only proves something if the source tree cannot leak in, which the src/ layout guarantees here.
+
+## 2026-10-02 - Plate reader, inbox watcher and per-well lineage (R1-R3)
+
+Decision / change:
+Implemented docs/plans/2026-10-02-plate-reader-watcher-plan.md, the minimal version of spec §11 item 4 that D7 had cut. The new `plate_reader.py` writes a synthetic 96-well CSV atomically: a `.tmp` file, then `os.replace`. The new `watcher.py` polls an inbox, parses each `*.csv`, computes the SHA-256 `readout_id` and posts to the new `POST /readouts` endpoint. It then moves the file to `processed/`, or to `rejected/` with a `.error.txt`, and leaves it in place when the API is unreachable. The API checks the ledger, then `validate_readout()`, then snapshots lineage and stores the readout. `GET /readouts/{id}` returns the stored readout. The ledger gained a `readouts` table and `well_commands()`. A shared `_completed_transfers()` now backs both `dest_volumes()` and `well_commands()`, so volume and lineage cannot disagree about which transfers ran. New acceptance scenarios R1-R3, decision D11, the spec, the README and a smoke step were added in the same change.
+
+Why:
+The repo only showed commands going out to a device. Results coming back, and tracing each well's reading to the commands that filled it, is the half of lab automation closest to the author's data background. It reuses the same patterns: look up the ledger before validating, use a content-derived idempotency key, never silently drop a file, and label synthetic data.
+
+What the AI generated vs. what I changed:
+All of it is my work for this task, written from the plan. Three departures from the plan were found while writing the tests. A duplicate compares only plate and readings, not `source_file`, because the same bytes re-exported under a new name are a resend, not a conflict. NaN cannot travel through the watcher (httpx refuses to serialize it), so the watcher rejects a non-finite value as a parse error. The API still checks it as defense in depth, and a test posts raw `NaN` JSON straight to the API. The CLI's `--once` exit code comes from a small pure `exit_code()`, so tests do not need to drive `main()`.
+
+What broke and how I found it:
+RED: the new tests failed at collection with `ModuleNotFoundError: No module named 'labdemo.plate_reader'`. After the code was written, 133 passed and only the traceability test failed ("scenario table in the spec changed"), because the spec did not yet list R1-R3. That is the gate doing its job. GREEN after the spec update: 134 passed. Smoke: every step PASS, including `plate_reader` and `watcher --once`. The watcher reported 9 wells traced, not the 8 the plan expected: `demo.py`'s F3 step dispenses into A2 before the fault fires, and lineage correctly counts that completed transfer. The README says 9. In a manual run against a temporary database, the same seed twice gave `duplicate`, a file with `I1` landed in `rejected/` with its error file, `--once` exited 1 because of that rejection, and `GET /readouts/<id>` traced A1-H1 to the A1 command and A2 to the F3 command. Ruff flagged long lines and ruff-format rewrapped three files; ty passed first time. A Python heredoc with a long multi-line replacement broke the bash quoting, so I ran those edit scripts from files.
+
+What I learned (one sentence):
+A content hash as the idempotency key turns "the watcher might send a file twice" from a bug into a design choice: at-least-once delivery to a receiver that stores each id once.

@@ -1,14 +1,15 @@
-"""SQLite command ledger (the idempotency key) and event log."""
+"""SQLite command ledger (the idempotency key), plate readouts with lineage, and event log."""
 
 import json
 import sqlite3
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel
 
-from labdemo.models import Worklist
+from labdemo.models import Readout, Transfer, Worklist
 
 
 class CommandStatus(StrEnum):
@@ -27,6 +28,7 @@ class EventKind(StrEnum):
     TRANSITION = "transition"
     FAULT_ARMED = "fault_armed"
     CLEARED = "cleared"
+    READOUT = "readout"
 
 
 class CommandRecord(BaseModel):
@@ -35,6 +37,12 @@ class CommandRecord(BaseModel):
     worklist: Worklist
     result: dict[str, Any] | None
     created_at: str
+
+
+class ReadoutRecord(BaseModel):
+    readout: Readout
+    lineage: list[dict[str, Any]]
+    ingested_at: str
 
 
 SCHEMA = """
@@ -51,6 +59,13 @@ CREATE TABLE IF NOT EXISTS events (
     kind       TEXT NOT NULL,
     command_id TEXT,
     detail     TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS readouts (
+    readout_id   TEXT PRIMARY KEY,
+    plate        TEXT NOT NULL,
+    readout_json TEXT NOT NULL,
+    lineage_json TEXT NOT NULL,
+    ingested_at  TEXT NOT NULL
 );
 """
 
@@ -108,11 +123,10 @@ class Ledger:
                 (status.value, json.dumps(result), command_id),
             )
 
-    def dest_volumes(self) -> dict[tuple[str, str], float]:
-        """Volume in each destination well: done commands plus completed part of failed ones."""
-        totals: dict[tuple[str, str], float] = {}
+    def _completed_transfers(self) -> Iterator[tuple[CommandRecord, Transfer]]:
+        """Transfers that really ran: all of a done command, the completed part of a failed one."""
         rows = self._db.execute(
-            "SELECT * FROM commands WHERE status IN (?, ?)",
+            "SELECT * FROM commands WHERE status IN (?, ?) ORDER BY created_at, command_id",
             (CommandStatus.DONE.value, CommandStatus.FAILED.value),
         ).fetchall()
         for row in rows:
@@ -122,9 +136,50 @@ class Ledger:
             else:
                 completed = int((record.result or {}).get("transfers_completed", 0))
             for transfer in record.worklist.transfers[:completed]:
-                key = (record.worklist.dest_plate, transfer.dest_well)
-                totals[key] = totals.get(key, 0.0) + transfer.volume_ul
+                yield record, transfer
+
+    def dest_volumes(self) -> dict[tuple[str, str], float]:
+        """Volume in each destination well: done commands plus completed part of failed ones."""
+        totals: dict[tuple[str, str], float] = {}
+        for record, transfer in self._completed_transfers():
+            key = (record.worklist.dest_plate, transfer.dest_well)
+            totals[key] = totals.get(key, 0.0) + transfer.volume_ul
         return totals
+
+    def well_commands(self) -> dict[tuple[str, str], list[str]]:
+        """The command_ids that put liquid in each destination well, oldest first."""
+        sources: dict[tuple[str, str], list[str]] = {}
+        for record, transfer in self._completed_transfers():
+            ids = sources.setdefault((record.worklist.dest_plate, transfer.dest_well), [])
+            if record.command_id not in ids:
+                ids.append(record.command_id)
+        return sources
+
+    def get_readout(self, readout_id: str) -> ReadoutRecord | None:
+        row = self._db.execute(
+            "SELECT * FROM readouts WHERE readout_id = ?", (readout_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return ReadoutRecord(
+            readout=Readout.model_validate_json(row["readout_json"]),
+            lineage=json.loads(row["lineage_json"]),
+            ingested_at=row["ingested_at"],
+        )
+
+    def add_readout(self, readout: Readout, lineage: list[dict[str, Any]]) -> None:
+        with self._db:
+            self._db.execute(
+                "INSERT INTO readouts (readout_id, plate, readout_json, lineage_json, ingested_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    readout.readout_id,
+                    readout.plate,
+                    readout.model_dump_json(),
+                    json.dumps(lineage),
+                    _now(),
+                ),
+            )
 
     def add_event(self, kind: EventKind, command_id: str | None = None, detail: str = "") -> None:
         with self._db:

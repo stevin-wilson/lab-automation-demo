@@ -34,6 +34,7 @@ One entry per decision, newest at the bottom. Each states what was chosen, why, 
 ## D7. Scope cuts for the weekend build
 - **Chosen:** no containers, file watcher, plate reader, heatmap or lineage UI. See spec §11 for the order they would be added.
 - **Why:** the build is capped at about five hours, and every file must stay explainable.
+- **Later:** the mock plate reader, the file watcher and per-well lineage were added on 2026-10-02 (D11). Containers, a heatmap and a lineage UI are still cut.
 
 ## D8. Look up the command_id before validating, and reject a reused id with a different worklist
 - **Chosen:** `POST /commands` checks the ledger first. Same worklist → duplicate (`200`). Different worklist → `409`. Only then validate, check state and execute.
@@ -49,3 +50,8 @@ One entry per decision, newest at the bottom. Each states what was chosen, why, 
 - **Chosen:** pushing a `v*` tag runs `.github/workflows/release.yml`. It re-runs CI, checks the tag against the `pyproject.toml` version and that the commit is on `main`, builds with `uv build`, smoke-tests an API served from the built wheel, and attaches the wheel and sdist to a GitHub Release. No container image and no hosted deployment, so D7 still stands.
 - **Why:** it is the smallest CD that yields a versioned, tested artifact. It needs no hosting account or secret beyond the workflow's own token, and it does not put an unauthenticated API with fault and clear endpoints on the public internet.
 - **Revisit when:** containerizing (spec §11 item 3). Then the release also builds, smoke-tests and pushes an image to GHCR.
+
+## D11. Readouts arrive as files that a polling watcher posts to the API
+- **Chosen:** a mock plate reader writes a CSV into an inbox folder (temp file, then an atomic rename). `labdemo.watcher` polls the folder every 2 s, parses each `*.csv`, and posts it to `POST /readouts`. It is a client of the API, like `ai_draft`. The `readout_id` is the SHA-256 of the file's bytes, and the API stores each id once. A resend is a duplicate, and the same id with different readings gets `409` (as in D8). The API snapshots each well's lineage at ingest: its value, its volume and the commands whose completed transfers filled it. Processed and rejected files are moved, never deleted.
+- **Why:** this is the smallest version of spec §11 item 4 that keeps the architecture honest. The API stays the only SQLite writer, so D3 still holds, and validation lives in one place. Polling needs no new dependency and is easy to explain. A content hash makes delivery at-least-once and safe: a file is left in place when the API is down and resent later without being stored twice.
+- **Revisit when:** files arrive faster than every few seconds, or the reader can push results itself. Then use OS file events (`watchdog`) or a message queue. Also revisit when real vendor exports need parsing; then use one parser per format behind `parse_csv`.

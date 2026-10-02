@@ -1,7 +1,7 @@
 import pytest
 
-from labdemo.models import Transfer, Worklist
-from labdemo.validation import validate
+from labdemo.models import Reading, Readout, Transfer, Worklist
+from labdemo.validation import validate, validate_readout
 
 
 def make(
@@ -87,3 +87,44 @@ def test_all_errors_are_reported_together():
 @pytest.mark.spec("V1")
 def test_blank_command_id_is_reported():
     assert "command_id must not be empty" in validate(make(xfer(), command_id="  "))
+
+
+# --- Readouts (R2) ----------------------------------------------------------------------
+
+
+def readout(*readings: tuple[str, float], plate: str = "P1", readout_id: str = "r-1") -> Readout:
+    return Readout(
+        readout_id=readout_id,
+        plate=plate,
+        source_file="read.csv",
+        readings=[Reading(well=well, value=value) for well, value in readings],
+    )
+
+
+@pytest.mark.spec("R2")
+def test_valid_readout_has_no_errors():
+    assert validate_readout(readout(("A1", 0.5), ("H12", 0.0))) == []
+
+
+@pytest.mark.spec("R2")
+def test_all_readout_errors_are_reported_together():
+    errors = validate_readout(
+        readout(("I1", 0.5), ("A1", float("inf")), ("A1", 0.2), plate="SRC1", readout_id=" ")
+    )
+
+    assert errors == [
+        "readout_id must not be empty",
+        "plate 'SRC1' is not a known destination plate (known: P1)",
+        "readings[0].well 'I1' is not a valid well (A1-H12)",
+        "readings[1].value must be a finite number",
+        "readings[2].well 'A1' appears more than once",
+    ]
+
+
+@pytest.mark.spec("R2")
+def test_readout_reading_count_limits():
+    assert "readings must contain 1-96 items (got 0)" in validate_readout(readout())
+    too_many = [(f"{row}{col}", 0.1) for row in "ABCDEFGH" for col in range(1, 13)] * 2
+    assert any(
+        "readings must contain 1-96 items" in e for e in validate_readout(readout(*too_many))
+    )
