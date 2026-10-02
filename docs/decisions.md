@@ -34,3 +34,8 @@ One entry per decision, newest at the bottom. Each states what was chosen, why, 
 ## D7. Scope cuts for the weekend build
 - **Chosen:** no containers, file watcher, plate reader, heatmap or lineage UI. See spec §11 for the order they would be added.
 - **Why:** the build is capped at about five hours, and every file must stay explainable.
+
+## D8. Look up the command_id before validating, and reject a reused id with a different worklist
+- **Chosen:** `POST /commands` checks the ledger first. Same worklist → duplicate (`200`). Different worklist → `409`. Only then validate, check state and execute.
+- **Why:** found while writing the plan. Validating first would reject the resend of a command that filled a well (its own volume now counts against the 300 µL cap), when the right answer is "duplicate". Returning the stored result for a different worklist would silently hide a client bug.
+- **Revisit when:** command IDs gain a time-to-live, or the ledger moves to a shared database.

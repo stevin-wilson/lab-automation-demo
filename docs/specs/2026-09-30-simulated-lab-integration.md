@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Draft, awaiting review |
+| **Status** | Approved 2026-10-01; amended while writing the plan (decision D8) |
 | **Author** | Stevin Wilson |
 | **Date** | 2026-09-30 |
 | **Plan** | `docs/plans/2026-09-30-simulated-lab-integration-plan.md` (written after this spec is approved) |
@@ -76,14 +76,15 @@ flowchart LR
 |---|---|---|
 | `src/labdemo/models.py` | Pydantic models (`Transfer`, `Worklist`) and 96-well plate constants. | Shared request schema |
 | `src/labdemo/validation.py` | A pure function that returns a list of human-readable errors for a worklist. | Orchestrator input validation |
-| `src/labdemo/device.py` | Owns the device state machine and drives the simulated liquid handler. | Edge agent wrapping a vendor SDK |
-| `src/labdemo/ledger.py` | Persists command records (the idempotency key) and an event log in SQLite. | Command journal / audit trail |
+| `src/labdemo/device.py` | Owns the device state machine and calls a `Simulator` once per transfer. | Edge agent wrapping a vendor SDK |
+| `src/labdemo/simulator.py` | The PyLabRobot-backed `Simulator`: pick up tip → aspirate → dispense → drop tip, on the chatterbox backend. | Vendor SDK or SiLA 2 client |
+| `src/labdemo/ledger.py` | Persists command records (the idempotency key) and an event log in SQLite, and derives how much liquid each destination well already holds. | Command journal / audit trail |
 | `src/labdemo/api.py` | HTTP endpoints that run validation, the idempotency check, the state check and execution, in that order. | Orchestration service |
 | `src/labdemo/ai_draft.py` | Turns a plain-English request into a worklist with an LLM, validates it and asks a human to approve it. | AI-assisted protocol drafting |
 | `dashboard.py` | A read-only status page showing device state and the event log. | Lab monitoring UI |
 | `demo.py` | A scripted run through A1 → V1 → F1 → F3 against a running API. | Not applicable (demo harness) |
 
-The **simulator adapter boundary** is `Device.execute(worklist)`. A real vendor SDK or SiLA 2 client would replace only the inside of this method.
+The **simulator boundary** is the `Simulator` protocol (`setup`, `stop`, `transfer`) that `Device.execute(worklist)` calls. A real vendor SDK or SiLA 2 client would replace only the class behind it.
 
 ## 5. Behavior
 
@@ -96,7 +97,10 @@ The **simulator adapter boundary** is `Device.execute(worklist)`. A real vendor 
 - Each transfer's volume must be at least 1 µL and at most 200 µL (the tip maximum).
 - The final volume in each destination well, including earlier transfers in the same worklist, must be at most 300 µL.
 - `source_plate` and `dest_plate` must be in the registry.
+- Volume already in a destination well is derived from the ledger: every transfer of a `done` command, plus the completed transfers of a `failed` command. `in_progress` commands are ignored.
 - A worklist has at least 1 and at most 96 transfers.
+- Well IDs are matched exactly: `a1` and `A1 ` are invalid, not normalized.
+- A volume that is not a finite number (NaN, infinity) is invalid.
 - `validate()` returns *all* errors, not just the first. Each error names the transfer index, the field and the limit. For example: `transfers[2].volume_ul=250 exceeds max 200 µL`.
 
 ### 5.2 Device state machine
@@ -122,8 +126,8 @@ stateDiagram-v2
 ### 5.3 Idempotency
 
 Processing order inside `POST /commands`:
-1. **Validate.** On failure: `422` with the errors and a `rejected` event. Stop.
-2. **Ledger lookup** by `command_id`. If found, in any status: `200` with `duplicate: true`, the stored status and result, and a `duplicate` event. Stop.
+1. **Ledger lookup** by `command_id`, *before* validation. If found with the **same** worklist, in any status: `200` with `duplicate: true`, the stored status and result, and a `duplicate` event. Stop. If found with a **different** worklist: `409` ("command_id was already used with a different worklist") and a `rejected` event. Stop. Looking up first matters: validating first would reject the resend of a command that filled a well as an overfill, instead of reporting a duplicate.
+2. **Validate.** On failure: `422` with the errors and a `rejected` event. Stop. The request body is also checked for shape (missing fields, wrong types); those failures return the same `422 {errors}` format.
 3. **State check.** If the device is not `IDLE`: `409` with the current state. **The command is not recorded**, so the client may resend the same `command_id` later.
 4. **Record as `in_progress`**, committed to SQLite *before* execution.
 5. **Execute**, then update the record to `done` (`200`) or `failed` (`500` with error details and `transfers_completed`).
@@ -136,7 +140,7 @@ A resend of a `failed` or `in_progress` command never runs again. Recovery means
 
 | Method & path | Success | Errors |
 |---|---|---|
-| `POST /commands` (body: `Worklist`) | `200 {command_id, status, duplicate, result}` | `422 {errors: [str]}`, `409 {detail, state}`, `500 {command_id, status: "failed", error, transfers_completed}` |
+| `POST /commands` (body: `Worklist`) | `200 {command_id, status, duplicate, result}` | `422 {errors: [str]}`, `409 {detail, state}` (device not `IDLE`) or `409 {detail}` (command_id reused with a different worklist), `500 {command_id, status: "failed", error, transfers_completed}` |
 | `GET /device` | `200 {state, since, armed_fault}` | — |
 | `GET /log?limit=100` | `200 {events: [{at, kind, command_id, detail}]}`, newest first | — |
 | `POST /device/fault` | `200 {armed_fault: true}`. A debug endpoint that arms a fault for the next run. | — |
@@ -148,7 +152,7 @@ The event `kind` is one of: `submitted`, `rejected`, `duplicate`, `refused`, `do
 
 1. The input is a plain-English request, e.g. "Transfer 50 µL from SRC1 A1–H1 into P1 column 1."
 2. Call the Anthropic Messages API (`claude-sonnet-5-5`) with a single forced tool whose `input_schema` is the worklist-without-`command_id` JSON schema. The prompt includes the plate registry and limits.
-3. Save the raw response to `recordings/<name>.json`. `--replay <name>` loads the file instead of calling the API, and the output is labeled **"recorded response"**.
+3. Save the raw response to `recordings/<name>.json` as `{request, model, origin, tool_input}`, where `origin` is `live` or `hand-written` (used for test fixtures). `--replay <name>` loads the file instead of calling the API, and the output is labeled **"recorded response"** plus the origin.
 4. Code assigns the `command_id`, then runs `validate()`.
 5. If there are errors, print them and exit non-zero. **Approval is not offered.**
 6. If it is valid, print the worklist as a table and ask `Approve and submit? [y/N]`. Only `y` POSTs to `/commands`.
@@ -183,7 +187,7 @@ The page reads `LABDEMO_API_URL`, defaulting to `http://127.0.0.1:8000`.
 | `LABDEMO_API_URL` | `http://127.0.0.1:8000` | dashboard, demo, ai_draft |
 | `ANTHROPIC_API_KEY` | unset | `ai_draft` live mode only |
 
-Variables are read from the environment or `.env`. `.env.example` is committed and `.env` is gitignored. To reset the demo, delete `labdemo.db`. `demo.py` prefixes its command IDs with a run timestamp, so repeated runs don't collide.
+Variables are read from the environment or `.env` (loaded with python-dotenv). `.env.example` is committed and `.env` is gitignored. The API is started with `uvicorn labdemo.api:create_app --factory`, so importing the module has no side effects. To reset the demo, delete `labdemo.db`. `demo.py` prefixes its command IDs with a run timestamp, so repeated runs don't collide.
 
 ## 8. Testing and traceability
 
