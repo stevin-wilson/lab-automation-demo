@@ -1,0 +1,42 @@
+[project]
+name = "labdemo"
+version = "0.1.0"
+description = "Simulated lab-automation integration: validated, idempotent commands to a simulated liquid handler"
+authors = [
+    { name = "Stevin Wilson", email = "stevinwilson@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=1.11.0",
+    "fastapi>=0.142.2",
+    "httpx>=0.28.1",
+    "pydantic>=2.13.5",
+    "streamlit>=1.64.0",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.22,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
+    "ruff>=0.16.10",
+    "ty>=0.0.84",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["spec(id): links a test to an acceptance scenario ID in the spec"]
+
+[tool.ty.environment]
+python-version = "3.12"
