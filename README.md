@@ -57,16 +57,16 @@ Both the dashboard and the demo read `LABDEMO_API_URL` (default `http://127.0.0.
 
 | ID | How to trigger it | What you see on the dashboard |
 |---|---|---|
-| A1: valid worklist runs | `demo.py` step "A1: valid worklist runs" (HTTP 200, `status: done`, 8 transfers) | State goes `IDLE` -> `BUSY` -> `IDLE`. `submitted`, `transition` and `done` rows. |
+| A1: valid worklist runs | `demo.py` step "A1: valid worklist runs" (HTTP 200, `status: done`, 8 transfers) | `submitted`, `transition` and `done` rows. The `IDLE` -> `BUSY` -> `IDLE` transitions are visible as `transition` rows in the event log (the run takes about a second, and the badge only updates when you press Refresh). |
 | V1: invalid worklist rejected | `demo.py` step "V1: invalid well and 250 uL rejected" (HTTP 422, one message per problem) | A highlighted `rejected` row. No `submitted` row and no `BUSY`: the device was never contacted. |
 | F1: resend is a duplicate | `demo.py` step "F1: resend of the A1 command is a duplicate" (HTTP 200, `duplicate: true`) | A highlighted `duplicate` row. No second run. |
-| F3: fault, then human clear | `demo.py` steps starting "F3": it arms a fault with `POST /device/fault`, the run fails after one transfer (HTTP 500), the next command gets 409, then `POST /device/clear` returns the device to `IDLE` | `failed` and `refused` rows highlighted. The state badge shows `NEEDS_HUMAN` until the clear, then `IDLE`. |
+| F3: fault, then human clear | `demo.py` steps starting "F3": it arms a fault with `POST /device/fault`, the run fails after one transfer (HTTP 500), the next command gets 409, then `POST /device/clear` returns the device to `IDLE` | `failed` and `refused` rows highlighted. The `transition` rows show the device going to `NEEDS_HUMAN` and, after the clear, back to `IDLE`. The state badge shows the current state, which is normally `IDLE` once the demo has finished. |
 | AI1: AI draft gate | `uv run python -m labdemo.ai_draft --replay overdose-250ul`: the 250 uL transfer is rejected and approval is not offered. `uv run python -m labdemo.ai_draft --replay column-1-50ul`: valid, asks `Approve and submit? [y/N]`, and needs the API running if you answer `y` | `overdose-250ul` sends nothing, so the dashboard does not change. `column-1-50ul` after `y` appears as a normal command in the log. |
 
 ## AI step
 
-- Replay is offline: `--replay NAME` loads `recordings/NAME.json` and never touches the network. Output is labeled "recorded response" plus the recording's origin.
-- The model's output is never trusted. The same `validate()` the API uses checks it, a person approves it, and the code (not the model) assigns the `command_id`.
+- Replay is offline: `--replay NAME` loads `recordings/NAME.json` and never touches the network. Output is labeled "recorded response" plus the recording's origin. A fresh live draft is labeled "live response" instead. If you approve and the API is not running, it prints a hint and exits with code 3.
+- The model's output is never trusted. The same `validate()` the API uses checks it (without ledger history, so the API can still return 422 for an overfill after you approve; the API re-validates with ledger volumes), a person approves it, and the code (not the model) assigns the `command_id`.
 - Re-recording needs `ANTHROPIC_API_KEY`. Copy `.env.example` to `.env`, set the key, then run `uv run python -m labdemo.ai_draft --record NAME "your request"`.
 - Each recording carries an `origin` field, `live` or `hand-written`. `recordings/column-1-50ul.json` is a `live` recording (a real call to `claude-sonnet-5-5`, recorded 2026-10-01 local time). `recordings/overdose-250ul.json` is `hand-written`: when asked live for "Move 250 uL from SRC1 A1 to P1 A1", the model split it into two valid 125 uL transfers on its own, so a live overdose could not be captured. The validator is defense in depth for when a model does not self-correct (see the limitations below).
 
@@ -94,7 +94,7 @@ uv run ty check
 | `dashboard.py` | A read-only Streamlit status page showing device state and the event log. |
 | `demo.py` | A scripted run through A1, V1, F1, F3 against a running API. |
 | `recordings/` | Recorded LLM responses used for offline replay and as test fixtures. |
-| `tests/` | The pytest suite. No test touches the network. |
+| `tests/` | The pytest suite. No test calls an external service (the dashboard tests connect to a refused loopback port). |
 | `docs/` | The spec, the implementation plan and the decision records. |
 
 ## Sustainability: built in a weekend, still maintainable
@@ -115,14 +115,15 @@ In production priority order (spec section 11):
 3. Containerize with one Dockerfile, then Compose and Kubernetes.
 4. A mock plate reader, file ingestion and per-well lineage (well to command to run).
 5. Auth, operator identity on `clear`, and a scheduler (for example Cellario or Green Button Go) between the orchestrator and devices.
+6. (Not in the spec's list.) Handle orphaned `in_progress` commands: count them conservatively as possibly dispensed, or refuse to go `IDLE` on startup while any exist (the `UNKNOWN_OUTCOME` path).
 
 Also true today:
 
-- **Retries and command IDs.** A resend of any known `command_id` returns the stored record and never re-executes, whether the command is `done`, `failed` or `in_progress`. Recovery after a failure is a human clear plus a **new** `command_id`.
-- **Restart behavior.** Device state is not persisted across an API restart; the API starts in `IDLE` again. An `in_progress` command left behind by a crash is never retried and needs a human to look at it.
+- **Retries and command IDs.** A resend of any known `command_id` returns the stored record for the same worklist (a different worklist with the same `command_id` gets 409) and never re-executes, whether the command is `done`, `failed` or `in_progress`. Recovery after a failure is a human clear plus a **new** `command_id`.
+- **Restart behavior.** Device state is not persisted across an API restart; the API starts in `IDLE` again. The process restarts with the device `IDLE`. A command left `in_progress` is never retried or re-run (a resend returns it as `in_progress`). Nothing flags the orphan on the dashboard. Its transfers are not counted toward well volumes (spec section 5.1, `in_progress` commands are ignored), so the 300 uL overfill check can under-count.
 - **Persistence failures.** If writing a transition event to SQLite fails after the device state has already changed, the device can be left `BUSY` or `ERROR`, or a command left `in_progress`, until the API restarts. A request cancelled mid-transfer also leaves the device `BUSY`. `UNKNOWN_OUTCOME` is the state meant for that case, but it is modeled and not exercised.
 - **The live AI path was checked by hand and has no automated live test.** It was run against the real API during development (a first call rejected with HTTP 400, a probe request for 250 uL, and the `--record` run). `column-1-50ul.json` has `origin: live` and is the one call that was recorded, on 2026-10-01 local time; `overdose-250ul.json` has `origin: hand-written` (the model split a live 250 uL request into two valid 125 uL transfers, so no live overdose exists). The rejected first call showed that `claude-sonnet-5-5` rejects forced tool use with HTTP 400, so the request now uses `tool_choice: auto` plus an instruction (decision D9). One automated test checks the request shape against a fake client; nothing in the test suite calls the real API.
-- **Dashboard.** It is covered by three automated tests in `tests/test_dashboard.py` (the unreachable-API banner, and reading the API URL from `.env` for the dashboard and for the demo). Its rendering against a live API is a manual check.
+- **Dashboard.** It is covered by automated tests in `tests/test_dashboard.py`: the unreachable-API banner, the elapsed time since the last transition (against a faked API response), and reading the API URL from `.env` for the dashboard and for the demo. The same file checks that `demo.py` fails on a wrong response body and passes against the real app in-process. The dashboard's rendering against a live API (including the row highlighting) is a manual check.
 
 ## Troubleshooting
 

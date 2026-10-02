@@ -2,6 +2,8 @@
 
 Honest notes on how this repo was built with AI assistance: what was generated, what was changed, what broke. Newest at the bottom.
 
+Who is writing: the entries below were written by the AI coding agents (Claude, run subagent-driven from a plan the AI drafted from the author's spec) that implemented each task. "I" in an entry means that agent, "the brief" means that task's text in `docs/plans/`, and "the controller" means the orchestrating session. Where an entry says something like "I have no browser here" or "I cloned the repo", that is the agent's environment and action, not the repo author's.
+
 ## Template
 
     ## YYYY-MM-DD HH:MM - Task N: <name>
@@ -14,7 +16,7 @@ Honest notes on how this repo was built with AI assistance: what was generated, 
 ## 2026-10-01 22:30 - Task 1: Models and validation (V1)
 
 Decision / change:
-Implemented models.py and validation.py with comprehensive worklist validation according to the spec.
+Implemented models.py and validation.py with worklist validation according to the spec.
 
 Why:
 Core foundation for the lab automation system - all requests flow through this validation layer before any device interaction occurs.
@@ -23,7 +25,7 @@ What the AI generated vs. what I changed:
 The AI generated the exact code from the brief without changes. All code was used as-is, following the spec verbatim.
 
 What broke and how I found it:
-RED: Initial pytest run showed `ModuleNotFoundError: No module named 'labdemo.models'` - expected since the module didn't exist yet. GREEN: After implementing both models.py and validation.py, all 15 tests passed immediately. No breaking issues during pre-commit checks.
+RED: Initial pytest run showed `ModuleNotFoundError: No module named 'labdemo.models'` - expected since the module didn't exist yet. GREEN: After implementing both models.py and validation.py, all 18 tests passed immediately. No breaking issues during pre-commit checks.
 
 What I learned (one sentence):
 Pydantic's permissive models paired with a centralized validation function provide clean separation between request parsing and business rule enforcement.
@@ -37,7 +39,7 @@ Why:
 Gives the API a real PyLabRobot call path to drive while moving nothing. The spy lets later tests prove the device was or was not called, and inject a failure on the Nth call.
 
 What the AI generated vs. what I changed:
-Code is verbatim from the brief, with one change: the lazy `labdemo.api` import in `conftest.py` carries `# ty: ignore[unresolved-import]`. `api.py` does not exist until Task 3 and the ty pre-commit hook would otherwise fail the commit. Remove the ignore when Task 3 lands.
+Code is verbatim from the brief, with one change: the lazy `labdemo.api` import in `conftest.py` carries `# ty: ignore[unresolved-import]`. `api.py` does not exist until Task 3 and the ty pre-commit hook would otherwise fail the commit. Remove the ignore when Task 5 lands (api.py was created in Task 5, not Task 3).
 The brief's PyLabRobot names were already verified against 0.2.2. The names an LLM would guess from older docs are wrong: `LiquidHandlerChatterboxBackend` (not `ChatterBoxBackend`), `cor_96_wellplate_360uL_Fb` (not `Cor_96_wellplate_360ul_Fb`), and `drop_tips` takes a list.
 
 What broke and how I found it:
@@ -66,10 +68,10 @@ A Protocol boundary (Simulator) decouples the state machine from the hardware dr
 ## 2026-10-01 - Task 4: Command ledger (F1, part 1)
 
 Decision / change:
-Implemented ledger.py with SQLite-backed CommandRecord, CommandStatus, EventKind, and Ledger class for idempotent command tracking and event logging. Added 6 comprehensive tests covering command persistence, primary key enforcement, and destination volume derivation.
+Implemented ledger.py with SQLite-backed CommandRecord, CommandStatus, EventKind, and Ledger class for idempotent command tracking and event logging. Added 6 tests covering command persistence, primary key enforcement, and destination volume derivation.
 
 Why:
-The ledger provides the idempotency key (command_id as PRIMARY KEY) that lets the API safely retry failed worklist submissions without duplicate execution, and records all state transitions and faults for auditability and recovery.
+The ledger provides the idempotency key (command_id as PRIMARY KEY) that makes a resend of any known command_id never re-execute: it returns the stored status and result, and recovery after a failure is a human clear plus a NEW command_id (spec 5.3, D5). The ledger also records all state transitions and faults for auditability and recovery.
 
 What the AI generated vs. what I changed:
 All code is verbatim from the brief. No changes were made; the brief provided the exact test and implementation code to use.
@@ -100,7 +102,7 @@ Where the idempotency check sits in the request pipeline is itself a behavior th
 ## 2026-10-01 - Task 6: AI draft gate (AI1)
 
 Decision / change:
-Added ai_draft.py (the model drafts a worklist through a forced propose_worklist tool call, the same validate() the API uses checks it, a person approves, then it is submitted), tests/test_ai_gate.py (9 tests) and two recordings. The model's schema (DraftWorklist) has no command_id, so the code assigns it and the model cannot choose it. Invalid or malformed output returns exit code 1 and never reaches the approval prompt or the API. Neither recording is a live model response: no ANTHROPIC_API_KEY was set in the environment and there is no .env file, so no live call was made. recordings/column-1-50ul.json (eight 50 µL transfers A1->A1 to H1->H1) and recordings/overdose-250ul.json (one 250 µL transfer) are both hand-written and labeled "origin": "hand-written". The live path (draft_live, --record) is implemented but has not been run.
+Added ai_draft.py (the model drafts a worklist through a forced propose_worklist tool call, the same validate() the API uses checks it, a person approves, then it is submitted; the forced tool call was superseded by Task 6b below), tests/test_ai_gate.py (9 tests) and two recordings. The model's schema (DraftWorklist) has no command_id, so the code assigns it and the model cannot choose it. Invalid or malformed output returns exit code 1 and never reaches the approval prompt or the API. Neither recording is a live model response: no ANTHROPIC_API_KEY was set in the environment and there is no .env file, so no live call was made. recordings/column-1-50ul.json (eight 50 µL transfers A1->A1 to H1->H1) and recordings/overdose-250ul.json (one 250 µL transfer) are both hand-written and labeled "origin": "hand-written". The live path (draft_live, --record) is implemented but has not been run. (superseded by Task 6b below)
 
 Why:
 An LLM is useful for turning a plain-English request into a worklist, but it must not be trusted. Putting the same validator and a human approval step between the model and the API keeps the safety rules in code, not in the prompt.
@@ -117,7 +119,7 @@ Leaving command_id out of the model's schema is a structural guarantee, which is
 ## 2026-10-01 - Task 7: Dashboard, demo script and run documentation
 
 Decision / change:
-Added dashboard.py (read-only Streamlit page: state badge, since-time, armed fault, event table with rejected/refused/failed/duplicate rows highlighted, Refresh button, error banner when the API is unreachable), demo.py (scripted A1, V1, F1, F3 run), tests/test_dashboard.py (1 test) and a full README rewrite (quickstart, scenarios, layout, sustainability, known limitations, troubleshooting). The README limitations section states the honest gaps: device state is not persisted across a restart, a crash can leave a command in_progress, a failed SQLite write or a cancelled request can leave the device BUSY/ERROR, UNKNOWN_OUTCOME is modeled but not exercised, and both recordings are hand-written because the live --record path has never been run against the real Anthropic API.
+Added dashboard.py (read-only Streamlit page: state badge, since-time, armed fault, event table with rejected/refused/failed/duplicate rows highlighted, Refresh button, error banner when the API is unreachable), demo.py (scripted A1, V1, F1, F3 run), tests/test_dashboard.py (1 test) and a full README rewrite (quickstart, scenarios, layout, sustainability, known limitations, troubleshooting). The README limitations section states the honest gaps: device state is not persisted across a restart, a crash can leave a command in_progress, a failed SQLite write or a cancelled request can leave the device BUSY/ERROR, UNKNOWN_OUTCOME is modeled but not exercised, and both recordings are hand-written because the live --record path has never been run against the real Anthropic API (superseded by Task 6b below).
 
 Why:
 The spec asks for a status view (section 5.6) and for a README that takes a new user from clone to a running demo. The demo script makes the four control-side behaviors visible in about one second, and the README states what is not done.
@@ -170,3 +172,20 @@ Clean clone: I cloned the repo into a temp directory, checked out feature/init a
 
 What I learned (one sentence):
 A traceability check is only as good as the markers it can see, so it has to run inside the full session, and a rename test (F9) is what proves it can fail.
+
+## 2026-10-02 - Final fix wave after the whole-branch review
+
+Decision / change:
+One wave of fixes for the findings from the whole-branch review (base commit f627f59). Docs: this log now says who is writing (the AI agents), the Task 1 test count is 18 not 15, Task 4 no longer claims the ledger lets the API "safely retry failed worklist submissions" (a resend of any known command_id returns the stored status and result and never re-executes; recovery is a human clear plus a NEW command_id), Task 2 names Task 5 as when the ty ignore went away, and the older "forced tool call" and "live path never run" statements are marked superseded by Task 6b. The README no longer claims the badge visibly goes BUSY or shows NEEDS_HUMAN (the demo takes about a second and the dashboard only refreshes on a click; the transitions are `transition` rows in the log), says the AI step's validate() has no ledger history so the API can still return 422 after approval, says a resend with a different worklist gets 409, states exactly what a crash leaves behind (device `IDLE` on restart, an `in_progress` command never retried, nothing flagging it, its transfers not counted toward well volumes so the 300 uL check can under-count) and lists handling that as a next step, and says no test calls an external service. Code: the dashboard shows the time since the last transition (spec 5.6) through a pure `labdemo.timefmt.elapsed_since`; `ai_draft` labels only replays "recorded response" and prints "[live response - model: ...]" for a fresh draft, reports an unreachable API on submit with a hint and exit code 3 instead of a traceback, and no longer prints a double period; `demo.py` checks the F1 body (`duplicate` true) and the F3 device state (`NEEDS_HUMAN`); the `cleared` event detail reuses the transition reason, so an empty note leaves no dangling colon; pytest runs with `--strict-markers`; an autouse fixture stops tests from loading the developer's real `.env` through `create_app`; pandas is a declared dependency. The spec and decisions.md needed no change: the spec already required the elapsed time and the "recorded response" label for replays, and the dashboard and AI changes make the code match it.
+
+Why:
+The review found places where the docs claimed more than the code did (a retry that the spec forbids, a badge transition nobody could see) and places where the code fell short of the spec (the raw ISO time, a live draft labeled as a recording). In a repo meant to model spec-driven development, those are bugs. Behavior the spec makes binding did not change: lookup still comes before validation, and dest_volumes still ignores in_progress rows.
+
+What the AI generated vs. what I changed:
+Everything here is my own work for this wave, not from a brief; the findings list was the input. Two details: the tests for the `FakeAPIError` replacement derive a local subclass of `anthropic.APIError` with `Exception.__init__`, so the test no longer imports `httpx2`; and the demo's end-to-end test patches `httpx.Client` with a FastAPI `TestClient` against the real app, so the new F1 and F3 body checks are shown to pass, not only to fail.
+
+What broke and how I found it:
+RED (new and changed tests run before the code): 8 failed and 30 passed across test_ai_gate, test_api, test_dashboard and test_traceability, plus test_timefmt failing to import `labdemo.timefmt`. The failures were the expected ones: `run() got an unexpected keyword argument 'replayed'`, an unhandled `httpx.ConnectError`, "Connection error.." with the double period, the `cleared` detail `stevin: ` where `cleared by stevin` was wanted (3 parametrized cases), the dashboard text lacking "In this state for", and `show() takes 3 positional arguments but 4 were given`. I then added a main-level label test and the end-to-end demo test, which also failed or passed as expected. GREEN: 111 passed in the whole suite (92 before this wave plus 19 new: 8 timefmt, 4 ai_draft label/unreachable/main, 3 cleared-detail cases, 1 in_progress resend, 3 dashboard/demo). The in_progress resend test (B11) passed on first run, since it pins behavior that was already correct (spec 5.3 "in any status"). Line endings: my first edit script rewrote several files with CRLF on Windows; .gitattributes enforces LF, so I normalized them to LF before committing.
+
+What I learned (one sentence):
+A doc sentence like "the badge shows NEEDS_HUMAN" is a claim about timing, and a one-second demo with a manual refresh button cannot back it.
