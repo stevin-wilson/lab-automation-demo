@@ -80,6 +80,23 @@ def test_dest_volumes_count_done_and_completed_part_of_failed(ledger):
     assert ledger.dest_volumes() == {("P1", "A1"): 150.0, ("P1", "B1"): 20.0}
 
 
+@pytest.mark.spec("R1")
+def test_well_commands_follow_the_same_completed_transfers_as_volumes(ledger):
+    first = worklist("first", Transfer(source_well="A1", dest_well="A1", volume_ul=10.0))
+    second = worklist(
+        "second",
+        Transfer(source_well="A1", dest_well="A1", volume_ul=10.0),
+        Transfer(source_well="B1", dest_well="B1", volume_ul=10.0),
+    )
+    running = worklist("running", Transfer(source_well="A1", dest_well="C1", volume_ul=10.0))
+    for item in (first, second, running):
+        ledger.start_command(item)
+    ledger.finish_command("first", CommandStatus.DONE, {"transfers_completed": 1})
+    ledger.finish_command("second", CommandStatus.FAILED, {"transfers_completed": 1})
+
+    assert ledger.well_commands() == {("P1", "A1"): ["first", "second"]}
+
+
 def test_events_are_newest_first_and_limited(ledger):
     ledger.add_event(EventKind.SUBMITTED, "cmd-1", "first")
     ledger.add_event(EventKind.DONE, "cmd-1", "second")

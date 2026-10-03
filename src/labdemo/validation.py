@@ -1,4 +1,4 @@
-"""Pure validation of a worklist against plate and volume limits. No I/O, no device access."""
+"""Pure validation of worklists and plate readouts against the plate rules. No I/O, no device."""
 
 import math
 from collections.abc import Mapping
@@ -11,6 +11,7 @@ from labdemo.models import (
     MIN_VOLUME_UL,
     SOURCE_PLATES,
     WELL_IDS,
+    Readout,
     Worklist,
 )
 
@@ -66,4 +67,30 @@ def validate(worklist: Worklist, dest_volumes: DestVolumes | None = None) -> lis
                     f"{prefix}.dest_well {worklist.dest_plate}/{well} would hold "
                     f"{total:g} µL, exceeding max {MAX_WELL_VOLUME_UL:g} µL"
                 )
+    return errors
+
+
+def validate_readout(readout: Readout) -> list[str]:
+    """Return every problem found in a plate readout. An empty list means valid."""
+    errors: list[str] = []
+
+    if not readout.readout_id.strip():
+        errors.append("readout_id must not be empty")
+    if readout.plate not in DEST_PLATES:
+        errors.append(_plate_error("plate", readout.plate, "destination", DEST_PLATES))
+
+    count = len(readout.readings)
+    if not 1 <= count <= len(WELL_IDS):
+        errors.append(f"readings must contain 1-{len(WELL_IDS)} items (got {count})")
+
+    seen: set[str] = set()
+    for i, reading in enumerate(readout.readings):
+        prefix = f"readings[{i}]"
+        if reading.well not in WELL_IDS:
+            errors.append(f"{prefix}.well {reading.well!r} is not a valid well (A1-H12)")
+        elif reading.well in seen:
+            errors.append(f"{prefix}.well {reading.well!r} appears more than once")
+        seen.add(reading.well)
+        if not math.isfinite(reading.value):
+            errors.append(f"{prefix}.value must be a finite number")
     return errors

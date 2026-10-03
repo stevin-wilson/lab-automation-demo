@@ -1,4 +1,7 @@
-"""Orchestrator API. Order of checks in POST /commands: ledger, validation, state, execute."""
+"""Orchestrator API. Order of checks in POST /commands: ledger, validation, state, execute.
+
+POST /readouts follows the same order without the device: ledger, validation, record.
+"""
 
 import os
 from collections.abc import AsyncIterator
@@ -12,9 +15,9 @@ from pydantic import BaseModel, Field
 
 from labdemo.device import Device, DeviceState, ExecutionFailed, IllegalTransition, Simulator
 from labdemo.ledger import CommandStatus, EventKind, Ledger
-from labdemo.models import Worklist
+from labdemo.models import Readout, Worklist
 from labdemo.simulator import PyLabRobotSimulator
-from labdemo.validation import validate
+from labdemo.validation import validate, validate_readout
 
 
 class ClearRequest(BaseModel):
@@ -139,5 +142,70 @@ def create_app(db_path: str | None = None, simulator: Simulator | None = None) -
             return JSONResponse(status_code=409, content={"detail": str(exc)})
         ledger.add_event(EventKind.CLEARED, detail=reason)
         return JSONResponse(content={"state": device.state.value})
+
+    @app.post("/readouts")
+    async def ingest_readout(readout: Readout) -> JSONResponse:
+        readout_id = readout.readout_id
+        label = f"readout {readout_id[:12]}"
+
+        # 1. Ledger lookup first: the same file sent again is a duplicate, never stored twice.
+        existing = ledger.get_readout(readout_id)
+        if existing is not None:
+            # source_file is not compared: the same bytes re-exported under a new name are a resend.
+            same = (existing.readout.plate, existing.readout.readings) == (
+                readout.plate,
+                readout.readings,
+            )
+            if not same:
+                detail = "readout_id was already used with a different readout"
+                ledger.add_event(EventKind.REJECTED, detail=f"{label}: {detail}")
+                return JSONResponse(status_code=409, content={"detail": detail})
+            ledger.add_event(EventKind.DUPLICATE, detail=f"{label}: resend of a stored readout")
+            return JSONResponse(
+                content={"readout_id": readout_id, "duplicate": True, "lineage": existing.lineage}
+            )
+
+        # 2. Validate. Nothing is stored on failure.
+        errors = validate_readout(readout)
+        if errors:
+            ledger.add_event(EventKind.REJECTED, detail=f"{label}: " + "; ".join(errors))
+            return JSONResponse(status_code=422, content={"errors": errors})
+
+        # 3. Snapshot each well's lineage as of now: its volume and the commands that filled it.
+        volumes = ledger.dest_volumes()
+        sources = ledger.well_commands()
+        lineage = [
+            {
+                "well": reading.well,
+                "value": reading.value,
+                "volume_ul": volumes.get((readout.plate, reading.well), 0.0),
+                "command_ids": sources.get((readout.plate, reading.well), []),
+            }
+            for reading in readout.readings
+        ]
+        ledger.add_readout(readout, lineage)
+        traced = sum(1 for well in lineage if well["command_ids"])
+        ledger.add_event(
+            EventKind.READOUT,
+            detail=f"{label}: {readout.plate}, {len(lineage)} wells, {traced} traced to commands",
+        )
+        return JSONResponse(
+            content={"readout_id": readout_id, "duplicate": False, "lineage": lineage}
+        )
+
+    @app.get("/readouts/{readout_id}")
+    async def get_readout(readout_id: str) -> JSONResponse:
+        record = ledger.get_readout(readout_id)
+        if record is None:
+            return JSONResponse(status_code=404, content={"detail": "unknown readout_id"})
+        return JSONResponse(
+            content={
+                "readout_id": readout_id,
+                "plate": record.readout.plate,
+                "source_file": record.readout.source_file,
+                "ingested_at": record.ingested_at,
+                "lineage": record.lineage,
+            }
+        )
 
     return app

@@ -1,4 +1,4 @@
-"""Request models and plate constants shared by the API, the validator and the simulator."""
+"""Shared request models (worklists, plate readouts) and the 96-well plate constants."""
 
 from pydantic import BaseModel
 
@@ -30,3 +30,19 @@ class Worklist(BaseModel):
     source_plate: str
     dest_plate: str
     transfers: list[Transfer]
+
+
+class Reading(BaseModel):
+    """One plate-reader value for one well (synthetic absorbance in this demo)."""
+
+    well: str
+    value: float
+
+
+class Readout(BaseModel):
+    """One plate read, parsed from one instrument file. readout_id is the idempotency key."""
+
+    readout_id: str
+    plate: str
+    source_file: str
+    readings: list[Reading]

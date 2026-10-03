@@ -1,18 +1,18 @@
 # lab-automation-demo
 
-A small **simulated** lab-automation integration: an orchestration API that validates worklists, enforces explicit device states and idempotent commands, and drives a **simulated** liquid handler. It also has a gated path where an LLM drafts a worklist and a human approves it.
+A small **simulated** lab-automation integration: an orchestration API that validates worklists, enforces explicit device states and idempotent commands, and drives a **simulated** liquid handler. It also has a gated path where an LLM drafts a worklist and a human approves it, and a return path: a mock plate reader drops result files that a watcher ingests and traces, well by well, to the commands that filled each well.
 
-> This is a learning project. It is not a real instrument integration. The liquid handler is a simulator, all data is **synthetic**, and replayed LLM output is labeled **recorded response**.
+> This is a learning project. It is not a real instrument integration. The liquid handler and the plate reader are simulators, all data is **synthetic**, and replayed LLM output is labeled **recorded response**.
 
 **Status:** the implementation is complete and tested. It was built test-first, on a feature branch, from the spec below.
 
 ## How this repo was built (spec-driven)
 
-1. **Spec**: [docs/specs/2026-09-30-simulated-lab-integration.md](docs/specs/2026-09-30-simulated-lab-integration.md) defines the goals, the acceptance scenarios (A1, V1, F1, F3, AI1) and the architecture.
+1. **Spec**: [docs/specs/2026-09-30-simulated-lab-integration.md](docs/specs/2026-09-30-simulated-lab-integration.md) defines the goals, the acceptance scenarios (A1, V1, F1, F3, AI1, R1, R2, R3) and the architecture.
 2. **Decisions**: [docs/decisions.md](docs/decisions.md) records what was chosen, why, and when to revisit it.
-3. **Plan**: `docs/plans/` holds the test-first implementation plan.
+3. **Plan**: `docs/plans/` holds the test-first implementation plans (the original build, CI/CD, and the plate reader and watcher).
 4. **Failing test, then code**: each scenario has a test marked `@pytest.mark.spec("<ID>")`. `tests/test_traceability.py` fails CI if a scenario in the spec has no test, or a test names a scenario the spec lacks.
-5. **CI**: every push and PR runs pre-commit (ruff, ty) and pytest from a clean environment, plus an end-to-end smoke job (`scripts/smoke.py`) that starts the real API and runs `demo.py` and both AI replays against it.
+5. **CI**: every push and PR runs pre-commit (ruff, ty) and pytest from a clean environment, plus an end-to-end smoke job (`scripts/smoke.py`) that starts the real API and runs `demo.py`, the plate reader and watcher, and both AI replays against it.
 6. **Releases**: a `v*` tag re-runs CI, smoke-tests the built wheel and publishes a GitHub Release (see [Releasing](#releasing)).
 
 ## Prerequisites
@@ -63,6 +63,9 @@ Both the dashboard and the demo read `LABDEMO_API_URL` (default `http://127.0.0.
 | F1: resend is a duplicate | `demo.py` step "F1: resend of the A1 command is a duplicate" (HTTP 200, `duplicate: true`) | A highlighted `duplicate` row. No second run. |
 | F3: fault, then human clear | `demo.py` steps starting "F3": it arms a fault with `POST /device/fault`, the run fails after one transfer (HTTP 500), the next command gets 409, then `POST /device/clear` returns the device to `IDLE` | `failed` and `refused` rows highlighted. The `transition` rows show the device going to `NEEDS_HUMAN` and, after the clear, back to `IDLE`. The state badge shows the current state, which is normally `IDLE` once the demo has finished. |
 | AI1: AI draft gate | `uv run python -m labdemo.ai_draft --replay overdose-250ul`: the 250 uL transfer is rejected and approval is not offered. `uv run python -m labdemo.ai_draft --replay column-1-50ul`: valid, asks `Approve and submit? [y/N]`, and needs the API running if you answer `y` | `overdose-250ul` sends nothing, so the dashboard does not change. `column-1-50ul` after `y` appears as a normal command in the log. |
+| R1: readout traced to commands | See [Plate reader and watcher](#plate-reader-and-watcher): the watcher prints `ingested ... 96 wells, 9 traced to commands` after `demo.py` | A `readout` row. `GET /readouts/<id>` shows each well's value, volume and `command_ids`. |
+| R2: bad readout rejected | Put a CSV with a well `I1` in the inbox: the watcher prints `rejected` and moves it to `inbox/rejected/` with a `.error.txt` | A highlighted `rejected` row whose detail starts with `readout`. A file that does not parse never reaches the API, so it adds no row. |
+| R3: same file again is a duplicate | Run `plate_reader --seed 1` twice: the second file has the same bytes, and the watcher prints `duplicate` | A highlighted `duplicate` row. The readout is stored once. |
 
 ## AI step
 
@@ -70,6 +73,37 @@ Both the dashboard and the demo read `LABDEMO_API_URL` (default `http://127.0.0.
 - The model's output is never trusted. The same `validate()` the API uses checks it (without ledger history, so the API can still return 422 for an overfill after you approve; the API re-validates with ledger volumes), a person approves it, and the code (not the model) assigns the `command_id`.
 - Re-recording needs `ANTHROPIC_API_KEY`. Copy `.env.example` to `.env`, set the key, then run `uv run python -m labdemo.ai_draft --record NAME "your request"`.
 - Each recording carries an `origin` field, `live` or `hand-written`. `recordings/column-1-50ul.json` is a `live` recording (a real call to `claude-sonnet-5-5`, recorded 2026-10-01 local time). `recordings/overdose-250ul.json` is `hand-written`: when asked live for "Move 250 uL from SRC1 A1 to P1 A1", the model split it into two valid 125 uL transfers on its own, so a live overdose could not be captured. The validator is defense in depth for when a model does not self-correct (see the limitations below).
+
+## Plate reader and watcher
+
+The return path: results come back from an instrument as files and are linked to the commands that produced them. Both pieces are simulated, and the values are **synthetic** random numbers, not a model of the liquid in each well.
+
+With the API running and `demo.py` already run (so P1 has some liquid), start the watcher in a fourth terminal:
+
+```
+uv run python -m labdemo.watcher --inbox inbox
+```
+
+In another terminal, take a synthetic read of plate P1:
+
+```
+uv run python -m labdemo.plate_reader --inbox inbox --seed 1
+```
+
+The watcher prints a line like `ingested  P1_<time>.csv: readout 962a63630154: 96 wells, 9 traced to commands`, and the file moves to `inbox/processed/`. Nine wells trace to commands: A1-H1 from the A1 step, plus A2 from the first transfer of the F3 step that completed before the fault. Look up the stored lineage with the full id (the file's SHA-256):
+
+```
+curl http://127.0.0.1:8000/readouts/<readout_id>
+```
+
+Each well comes back as `{well, value, volume_ul, command_ids}`. A well with `command_ids: []` is a reading that no command explains.
+
+- **Same file twice:** run the `plate_reader` command again with the same `--seed`. The bytes are identical, so the watcher prints `duplicate` and the API does not store it again.
+- **Bad file:** a file with an invalid or repeated well, an unknown plate, or a value that is not a number moves to `inbox/rejected/` with a `.error.txt` that lists every problem.
+- **API down:** the file stays in `inbox/` and is retried on the next poll (every 2 s). That is safe because the API stores each file's hash once.
+- **One pass instead of polling:** add `--once`. It exits 0 if every file was stored or was a duplicate, 1 if any was rejected, and 2 if any must be retried.
+
+The `inbox/` folder is gitignored. Delete it to start over.
 
 ## Development
 
@@ -82,7 +116,7 @@ uv run ty check
 uv run python scripts/smoke.py
 ```
 
-`scripts/smoke.py` is what the CI `e2e` job runs: it starts the API on a free port with a fresh temporary database, runs `demo.py` and both `ai_draft` replays (answering `y` for `column-1-50ul`), checks each exit code, stops the server and prints a PASS/FAIL summary. It does not touch your `labdemo.db`.
+`scripts/smoke.py` is what the CI `e2e` job runs: it starts the API on a free port with a fresh temporary database, runs `demo.py`, writes a synthetic read into a temporary inbox and runs `watcher --once`, then runs both `ai_draft` replays (answering `y` for `column-1-50ul`), checks each exit code, stops the server and prints a PASS/FAIL summary. It does not touch your `labdemo.db`.
 
 ## Releasing
 
@@ -102,13 +136,15 @@ Repo setting (manual, once): in GitHub **Settings → Branches**, protect `main`
 
 | Path | Responsibility |
 |---|---|
-| `src/labdemo/models.py` | Pydantic models (`Transfer`, `Worklist`) and 96-well plate constants. |
-| `src/labdemo/validation.py` | A pure function that returns a list of human-readable errors for a worklist. |
+| `src/labdemo/models.py` | Pydantic models (`Transfer`, `Worklist`, `Reading`, `Readout`) and 96-well plate constants. |
+| `src/labdemo/validation.py` | Pure functions that return a list of human-readable errors for a worklist or a readout. |
 | `src/labdemo/device.py` | Owns the device state machine and calls a `Simulator` once per transfer. |
 | `src/labdemo/simulator.py` | The PyLabRobot-backed `Simulator`: pick up tip, aspirate, dispense, drop tip, on the chatterbox backend. |
-| `src/labdemo/ledger.py` | Persists command records (the idempotency key) and an event log in SQLite, and derives how much liquid each destination well already holds. |
+| `src/labdemo/ledger.py` | Persists command records (the idempotency key), readouts with their lineage, and an event log in SQLite, and derives each destination well's volume and the commands that filled it. |
 | `src/labdemo/api.py` | HTTP endpoints that run validation, the idempotency check, the state check and execution, in that order. |
 | `src/labdemo/ai_draft.py` | Turns a plain-English request into a worklist with an LLM, validates it and asks a human to approve it. |
+| `src/labdemo/plate_reader.py` | The mock plate reader: writes one synthetic 96-well read as a CSV file, atomically. |
+| `src/labdemo/watcher.py` | Polls an inbox folder, posts each readout file to the API and files it as processed or rejected. |
 | `dashboard.py` | A read-only Streamlit status page showing device state and the event log. |
 | `demo.py` | A scripted run through A1, V1, F1, F3 against a running API. |
 | `recordings/` | Recorded LLM responses used for offline replay and as test fixtures. |
@@ -133,7 +169,7 @@ In production priority order (spec section 11):
 1. Exercise `UNKNOWN_OUTCOME` (reply timeout leads to `NEEDS_HUMAN`, no auto-retry). The state is modeled but nothing triggers it.
 2. Async execution (`202` plus status polling) and a separate edge-agent process per instrument.
 3. Containerize with one Dockerfile, then Compose and Kubernetes.
-4. A mock plate reader, file ingestion and per-well lineage (well to command to run).
+4. A plate heatmap and lineage view on the dashboard, and parsers for real vendor plate-reader exports. (The mock reader, file ingestion and per-well lineage are done; see [Plate reader and watcher](#plate-reader-and-watcher).)
 5. Auth, operator identity on `clear`, and a scheduler (for example Cellario or Green Button Go) between the orchestrator and devices.
 6. (Not in the spec's list.) Handle orphaned `in_progress` commands: count them conservatively as possibly dispensed, or refuse to go `IDLE` on startup while any exist (the `UNKNOWN_OUTCOME` path).
 
@@ -144,6 +180,7 @@ Also true today:
 - **Persistence failures.** If writing a transition event to SQLite fails after the device state has already changed, the device can be left `BUSY` or `ERROR`, or a command left `in_progress`, until the API restarts. A request cancelled mid-transfer also leaves the device `BUSY`. `UNKNOWN_OUTCOME` is the state meant for that case, but it is modeled and not exercised.
 - **The live AI path was checked by hand and has no automated live test.** It was run against the real API during development (a first call rejected with HTTP 400, a probe request for 250 uL, and the `--record` run). `column-1-50ul.json` has `origin: live` and is the one call that was recorded, on 2026-10-01 local time; `overdose-250ul.json` has `origin: hand-written` (the model split a live 250 uL request into two valid 125 uL transfers, so no live overdose exists). The rejected first call showed that `claude-sonnet-5-5` rejects forced tool use with HTTP 400, so the request now uses `tool_choice: auto` plus an instruction (decision D9). One automated test checks the request shape against a fake client; nothing in the test suite calls the real API.
 - **Dashboard.** It is covered by automated tests in `tests/test_dashboard.py`: the unreachable-API banner, the elapsed time since the last transition (against a faked API response), and reading the API URL from `.env` for the dashboard and for the demo. The same file checks that `demo.py` fails on a wrong response body and passes against the real app in-process. The dashboard's rendering against a live API (including the row highlighting) is a manual check.
+- **Readouts.** Lineage is a snapshot taken at ingest: a command that runs later does not change a stored readout. A well read before any command reached it has `command_ids: []`. The mock reader's values are random, so they do not track the volumes. A file moved to `processed/` or `rejected/` replaces an older file with the same name. The mock reader puts a microsecond timestamp in every name, but a real reader that reuses names would need a unique suffix. The dashboard shows readouts only as event rows; there is no plate view.
 
 ## Troubleshooting
 

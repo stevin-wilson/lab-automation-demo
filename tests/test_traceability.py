@@ -20,7 +20,7 @@ def test_every_scenario_has_a_test_and_every_marker_a_scenario(request):
         marker.args[0] for item in request.session.items for marker in item.iter_markers("spec")
     }
     ids = spec_ids()
-    assert ids == {"A1", "V1", "F1", "F3", "AI1"}, (
+    assert ids == {"A1", "V1", "F1", "F3", "AI1", "R1", "R2", "R3"}, (
         "scenario table in the spec changed; if that was intentional, update the expected set here"
     )
     assert ids - covered == set(), f"scenarios with no test: {sorted(ids - covered)}"

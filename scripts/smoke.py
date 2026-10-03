@@ -1,8 +1,8 @@
-"""End-to-end smoke check: a real API process, driven by demo.py and the ai_draft replays.
+"""End-to-end smoke check: a real API process, driven by demo.py, the watcher and ai_draft.
 
-Runs offline against the simulator with a fresh temporary database. Exits 0 when every step
-behaved as expected. CI runs it against the source tree; the release job runs it against the
-built wheel with --server-cmd.
+Runs offline against the simulator with a fresh temporary database and readout inbox. Exits 0
+when every step behaved as expected. CI runs it against the source tree; the release job runs
+it against the built wheel with --server-cmd.
 
     uv run python scripts/smoke.py
     uv run python scripts/smoke.py --server-cmd "uv run --isolated --no-project --with dist/X.whl \
@@ -25,22 +25,37 @@ import httpx
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SERVER = [sys.executable, "-m", "uvicorn", "labdemo.api:create_app", "--factory", "--port"]
 
-# (name, client command, stdin, expected exit code)
-STEPS = [
-    ("demo.py: A1, V1, F1, F3", [sys.executable, "demo.py"], "", 0),
-    (
-        "AI1 replay overdose-250ul: rejected, approval not offered",
-        [sys.executable, "-m", "labdemo.ai_draft", "--replay", "overdose-250ul"],
-        "",
-        1,
-    ),
-    (
-        "AI1 replay column-1-50ul: approved and accepted",
-        [sys.executable, "-m", "labdemo.ai_draft", "--replay", "column-1-50ul"],
-        "y\n",
-        0,
-    ),
-]
+Step = tuple[str, list[str], str, int]  # (name, client command, stdin, expected exit code)
+
+
+def steps(inbox: Path) -> list[Step]:
+    return [
+        ("demo.py: A1, V1, F1, F3", [sys.executable, "demo.py"], "", 0),
+        (
+            "plate_reader: synthetic read into a temporary inbox",
+            [sys.executable, "-m", "labdemo.plate_reader", "--inbox", str(inbox), "--seed", "1"],
+            "",
+            0,
+        ),
+        (
+            "R1 watcher --once: readout ingested with lineage",
+            [sys.executable, "-m", "labdemo.watcher", "--inbox", str(inbox), "--once"],
+            "",
+            0,
+        ),
+        (
+            "AI1 replay overdose-250ul: rejected, approval not offered",
+            [sys.executable, "-m", "labdemo.ai_draft", "--replay", "overdose-250ul"],
+            "",
+            1,
+        ),
+        (
+            "AI1 replay column-1-50ul: approved and accepted",
+            [sys.executable, "-m", "labdemo.ai_draft", "--replay", "column-1-50ul"],
+            "y\n",
+            0,
+        ),
+    ]
 
 
 def free_port() -> int:
@@ -101,7 +116,7 @@ def main() -> int:
                 print(f"FAIL: the API did not come up at {url}. Server output:")
                 print(log_path.read_text(errors="replace"))
                 return 1
-            for name, client, stdin, expected in STEPS:
+            for name, client, stdin, expected in steps(Path(tmp) / "inbox"):
                 print(f"\n##### {name}", flush=True)
                 code = subprocess.run(client, cwd=ROOT, env=env, input=stdin, text=True).returncode
                 results.append((name, code == expected, code, expected))

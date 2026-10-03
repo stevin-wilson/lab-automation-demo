@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| **Status** | Implemented (amended while writing the plan, decision D8; AI call amended after the first live run, decision D9) |
+| **Status** | Implemented (amended while writing the plan, decision D8; AI call amended after the first live run, decision D9; readout ingestion and lineage added 2026-10-02, decision D11) |
 | **Author** | Stevin Wilson |
 | **Date** | 2026-09-30 |
-| **Plan** | `docs/plans/2026-09-30-simulated-lab-integration-plan.md` (written after this spec is approved) |
+| **Plan** | `docs/plans/2026-09-30-simulated-lab-integration-plan.md` (written after this spec is approved); readouts: `docs/plans/2026-10-02-plate-reader-watcher-plan.md` |
 | **Decisions** | [`docs/decisions.md`](../decisions.md) |
 
 > This spec is the source of truth. Code, tests and the README follow it. If behavior changes, this file changes in the same pull request.
@@ -20,6 +20,7 @@ A small, fully simulated integration between an orchestration API and a liquid h
 - idempotent commands
 - safe failure handling
 - a gated path for AI-proposed work
+- results coming back: a plate readout ingested from a file and traced to the commands that filled each well
 
 It is **not** a real instrument integration. The liquid handler is PyLabRobot's simulated backend, and every readout is synthetic.
 
@@ -27,7 +28,7 @@ It is **not** a real instrument integration. The liquid handler is PyLabRobot's 
 
 ### Goals
 
-1. One worklist's full path: **request → validation → idempotency check → simulated device execution → recorded result → status view**.
+1. One worklist's full path: **request → validation → idempotency check → simulated device execution → recorded result → status view**, and back: **readout file → watcher → validation → idempotency check → stored readout with per-well lineage**.
 2. Production patterns, each provable by a test:
    - validation in code
    - an explicit state machine
@@ -41,7 +42,7 @@ It is **not** a real instrument integration. The liquid handler is PyLabRobot's 
 
 - Real hardware, vendor SDKs, SiLA 2 servers or a scheduler.
 - Auth, multiple users, high availability, containers or Kubernetes.
-- Plate-reader readouts, file ingestion or measurement lineage (see §11).
+- A heatmap or lineage UI, vendor plate-reader file formats, or a real reader (see §11).
 - A general framework. Specific and small beats extensible.
 
 ## 3. Acceptance scenarios
@@ -55,12 +56,17 @@ Each scenario has a stable ID. The ID is the first column of this table and matc
 | F1 | Command `cmd-42` has completed | `cmd-42` is submitted again, simulating a lost reply | `200` with `duplicate: true` and the stored result. **The simulator is not called again.** A `duplicate` event appears in `GET /log`. |
 | F3 | A fault is armed via `POST /device/fault` | The next worklist runs | The fault fires after the first transfer completes. The device moves `BUSY → ERROR → NEEDS_HUMAN`. The command is stored as `failed`, recording how many transfers completed. New commands get `409` until `POST /device/clear` returns the device to `IDLE`. Resending the failed `command_id` returns the stored failure and never retries. |
 | AI1 | A recorded LLM response whose worklist contains a 250 µL transfer | `ai_draft` processes it in replay mode | The validation errors are shown and approval is **not offered**. Nothing is sent to the API, and the device is never called. |
+| R1 | A command has filled P1 column 1 | The mock reader writes a readout file to the inbox and the watcher runs | The file moves to `processed/`. `GET /readouts/{readout_id}` returns all 96 wells, each with its value, its volume and the `command_ids` that filled it (only completed transfers count). A1–H1 trace to that command; a well no command filled has `command_ids: []`. A `readout` event appears in `GET /log`. The device is never called. |
+| R2 | Any state | A readout file with an invalid well, a repeated well, an unknown plate or a non-finite value arrives, or a file that does not parse | The file moves to `rejected/` with a `.error.txt` naming every problem. Nothing is stored. A file that reached the API leaves a `rejected` event; a file that did not parse never reaches the API. |
+| R3 | A readout file has been ingested | The same bytes arrive again (even under a new file name), or the API is unreachable | A resend gets `200` with `duplicate: true` and the stored lineage; it is stored once and logs a `duplicate` event. A different readout with the same `readout_id` gets `409`. If the API is unreachable, the file stays in the inbox for the next poll. |
 
 ## 4. Architecture
 
 ```mermaid
 flowchart LR
     client[demo.py / curl] -->|Worklist JSON| api
+    reader[plate_reader.py<br/>mock, synthetic CSV] -->|file| inbox[(inbox/)]
+    inbox --> watcher[watcher.py<br/>poll, parse, hash] -->|Readout JSON| api
     ai[ai_draft.py<br/>LLM drafts → validate → human y/n] -->|approved Worklist| api
     subgraph proc[One FastAPI process]
         api[api.py<br/>orchestrator endpoints] --> val[validation.py<br/>pure checks]
@@ -74,13 +80,15 @@ flowchart LR
 
 | Module | One-sentence responsibility | Real-lab counterpart |
 |---|---|---|
-| `src/labdemo/models.py` | Pydantic models (`Transfer`, `Worklist`) and 96-well plate constants. | Shared request schema |
-| `src/labdemo/validation.py` | A pure function that returns a list of human-readable errors for a worklist. | Orchestrator input validation |
+| `src/labdemo/models.py` | Pydantic models (`Transfer`, `Worklist`, `Reading`, `Readout`) and 96-well plate constants. | Shared request schema |
+| `src/labdemo/validation.py` | Pure functions that return a list of human-readable errors for a worklist or a readout. | Orchestrator input validation |
 | `src/labdemo/device.py` | Owns the device state machine and calls a `Simulator` once per transfer. | Edge agent wrapping a vendor SDK |
 | `src/labdemo/simulator.py` | The PyLabRobot-backed `Simulator`: pick up tip → aspirate → dispense → drop tip, on the chatterbox backend. | Vendor SDK or SiLA 2 client |
-| `src/labdemo/ledger.py` | Persists command records (the idempotency key) and an event log in SQLite, and derives how much liquid each destination well already holds. | Command journal / audit trail |
+| `src/labdemo/ledger.py` | Persists command records (the idempotency key), readouts with their lineage, and an event log in SQLite, and derives each destination well's volume and the commands that filled it. | Command journal / audit trail |
 | `src/labdemo/api.py` | HTTP endpoints that run validation, the idempotency check, the state check and execution, in that order. | Orchestration service |
 | `src/labdemo/ai_draft.py` | Turns a plain-English request into a worklist with an LLM, validates it and asks a human to approve it. | AI-assisted protocol drafting |
+| `src/labdemo/plate_reader.py` | Writes one synthetic 96-well absorbance read as a CSV file, atomically. | Plate reader export |
+| `src/labdemo/watcher.py` | Polls an inbox folder, parses each CSV, posts it to the API and files it as processed or rejected. | File-ingestion agent on the reader PC |
 | `dashboard.py` | A read-only status page showing device state and the event log. | Lab monitoring UI |
 | `demo.py` | A scripted run through A1 → V1 → F1 → F3 against a running API. | Not applicable (demo harness) |
 
@@ -145,8 +153,10 @@ A resend of a `failed` or `in_progress` command never runs again. Recovery means
 | `GET /log?limit=100` | `200 {events: [{at, kind, command_id, detail}]}`, newest first | — |
 | `POST /device/fault` | `200 {armed_fault: true}`. A debug endpoint that arms a fault for the next run. | — |
 | `POST /device/clear` (body: `{operator, note}`) | `200 {state: "IDLE"}` | `409` unless the state is `NEEDS_HUMAN` |
+| `POST /readouts` (body: `Readout`) | `200 {readout_id, duplicate, lineage}` | `422 {errors: [str]}`, `409 {detail}` (readout_id reused with a different readout) |
+| `GET /readouts/{readout_id}` | `200 {readout_id, plate, source_file, ingested_at, lineage}` | `404 {detail}` |
 
-The event `kind` is one of: `submitted`, `rejected`, `duplicate`, `refused`, `done`, `failed`, `transition`, `fault_armed`, `cleared`.
+The event `kind` is one of: `submitted`, `rejected`, `duplicate`, `refused`, `done`, `failed`, `transition`, `fault_armed`, `cleared`, `readout`. Readout events have no `command_id`; their `detail` starts with `readout <first 12 hex digits of readout_id>`.
 
 ### 5.5 AI gate (`ai_draft.py`)
 
@@ -168,6 +178,17 @@ A single Streamlit page showing:
 
 The page reads `LABDEMO_API_URL`, defaulting to `http://127.0.0.1:8000`.
 
+### 5.7 Readout ingestion (`plate_reader.py`, `watcher.py`)
+
+1. **File format.** UTF-8 CSV. Lines starting with `#` are comments; the mock reader's first line is `# SYNTHETIC DATA - mock plate reader, not a real instrument`. The header is exactly `plate,well,od600`, one row per well, one plate per file. The mock reader writes all 96 wells with seeded random values in 0.04–1.2; they do not model the liquid in the well.
+2. **Atomic arrival.** The reader writes `<name>.csv.tmp`, then renames it to `<name>.csv`. The watcher reads only `*.csv`.
+3. **Identity.** `readout_id` is the SHA-256 of the file's bytes. The same bytes under a new name are the same readout.
+4. **Watcher pass.** For each `*.csv` in name order: parse (a parse failure moves the file to `rejected/` with `<name>.error.txt` and never calls the API), then `POST /readouts`. `200` moves the file to `processed/`. `409` or `422` moves it to `rejected/` with the API's errors. A connection failure stops the pass and leaves the file in place; any other HTTP status leaves the file in place. Both are retried on the next poll, which is safe because the API stores each `readout_id` once (at-least-once delivery to an idempotent receiver).
+5. **API order** in `POST /readouts`: ledger lookup by `readout_id` (same plate and readings: `200` with `duplicate: true` and the stored lineage, and a `duplicate` event; different: `409` and a `rejected` event), then `validate_readout()` (`422` and a `rejected` event), then build lineage, store, and log a `readout` event. There is no device or state check: reading results never touches the liquid handler.
+6. **Readout rules.** `readout_id` is not blank; `plate` is a destination plate; 1–96 readings; each well is a valid well ID and appears once; each value is finite. All errors are returned, each naming the reading index and field, e.g. `readings[2].well 'A1' appears more than once`.
+7. **Lineage** is a snapshot taken at ingest. For each reading: `{well, value, volume_ul, command_ids}`. `volume_ul` uses the same rule as §5.1 (done commands plus completed transfers of failed ones). `command_ids` lists every command whose completed transfers reached that well, oldest first. An empty list marks a reading no command explains.
+8. **Watcher CLI.** `--inbox` (default `inbox`), `--interval` seconds (default 2), `--once` for one pass with exit code 0 (all stored or duplicate), 1 (any rejected) or 2 (any left to retry).
+
 ## 6. Error handling
 
 | Situation | Behavior |
@@ -178,13 +199,15 @@ The page reads `LABDEMO_API_URL`, defaulting to `http://127.0.0.1:8000`.
 | Illegal state transition in code | `IllegalTransition` is raised. This is a bug, and a test covers it. |
 | LLM call fails or no API key | `ai_draft` exits with a clear message pointing to `--replay` |
 | Dashboard can't reach the API | A banner shows the URL it tried |
+| Readout file does not parse or fails validation | Moved to `rejected/` with a `.error.txt`; nothing stored |
+| Watcher can't reach the API | The file stays in the inbox and is retried on the next poll |
 
 ## 7. Configuration
 
 | Variable | Default | Used by |
 |---|---|---|
 | `LABDEMO_DB` | `./labdemo.db` | API |
-| `LABDEMO_API_URL` | `http://127.0.0.1:8000` | dashboard, demo, ai_draft |
+| `LABDEMO_API_URL` | `http://127.0.0.1:8000` | dashboard, demo, ai_draft, watcher |
 | `ANTHROPIC_API_KEY` | unset | `ai_draft` live mode only |
 
 Variables are read from the environment or `.env` (loaded with python-dotenv). `.env.example` is committed and `.env` is gitignored. The API is started with `uvicorn labdemo.api:create_app --factory`, so importing the module has no side effects. To reset the demo, delete `labdemo.db`. `demo.py` prefixes its command IDs with a run timestamp, so repeated runs don't collide.
@@ -202,6 +225,9 @@ Variables are read from the environment or `.env` (loaded with python-dotenv). `
 | F1 | `tests/test_api.py::test_duplicate_command_not_reexecuted` | `api`, `ledger` |
 | F3 | `tests/test_api.py::test_fault_locks_device_until_cleared`, `tests/test_device.py::test_illegal_transitions_raise` | `device`, `api` |
 | AI1 | `tests/test_ai_gate.py::test_invalid_llm_worklist_not_offered_for_approval` | `ai_draft`, `validation` |
+| R1 | `tests/test_watcher.py::test_readout_is_ingested_with_per_well_lineage`, `tests/test_ledger.py::test_well_commands_follow_the_same_completed_transfers_as_volumes` | `plate_reader`, `watcher`, `api`, `ledger` |
+| R2 | `tests/test_watcher.py::test_invalid_readout_is_rejected_and_not_stored`, `tests/test_validation.py::test_all_readout_errors_are_reported_together` | `watcher`, `validation`, `api` |
+| R3 | `tests/test_watcher.py::test_same_file_again_is_a_duplicate_not_stored_twice`, `tests/test_watcher.py::test_api_unreachable_leaves_the_file_for_the_next_poll` | `watcher`, `api`, `ledger` |
 | (meta) | `tests/test_traceability.py` | This spec ↔ test markers |
 
 ## 9. Tooling and quality gates
@@ -209,7 +235,7 @@ Variables are read from the environment or `.env` (loaded with python-dotenv). `
 - **uv** handles the Python version (3.12, pinned in `.python-version`), dependencies and `uv.lock`, which is committed.
 - **ruff** handles linting and formatting. **ty** handles type checking. Both are configured in `pyproject.toml`.
 - **pre-commit** runs ruff, ruff-format, `ty check` and the hygiene hooks.
-- **CI** (`.github/workflows/ci.yml`), on a push to any branch and on PRs, runs two parallel jobs. `check` runs `uv sync --locked`, then `uv run pre-commit run --all-files`, then `uv run pytest`. `e2e` runs `scripts/smoke.py`: it starts a real `uvicorn` process on a fresh temporary database, runs `demo.py` (must exit 0), `ai_draft --replay overdose-250ul` (must exit 1, not offered for approval) and `ai_draft --replay column-1-50ul` with approval (must exit 0), then stops the server. Superseded runs on the same ref are cancelled.
+- **CI** (`.github/workflows/ci.yml`), on a push to any branch and on PRs, runs two parallel jobs. `check` runs `uv sync --locked`, then `uv run pre-commit run --all-files`, then `uv run pytest`. `e2e` runs `scripts/smoke.py`: it starts a real `uvicorn` process on a fresh temporary database, runs `demo.py` (must exit 0), `plate_reader` into a temporary inbox then `watcher --once` (must exit 0), `ai_draft --replay overdose-250ul` (must exit 1, not offered for approval) and `ai_draft --replay column-1-50ul` with approval (must exit 0), then stops the server. Superseded runs on the same ref are cancelled.
 - **Release** (`.github/workflows/release.yml`), on a `v*` tag: re-runs CI, checks that the tag equals `v` + the `pyproject.toml` version and that the tagged commit is on `main`, runs `uv build`, runs `scripts/smoke.py` against an API served from the built wheel, then publishes a GitHub Release with the wheel and sdist attached (D10). There is no container image and no hosted deployment.
 - **Dependabot** (`.github/dependabot.yml`) opens weekly grouped PRs for GitHub Actions and `uv.lock`, and CI gates them like any other PR.
 
@@ -226,13 +252,14 @@ Full records are in [`docs/decisions.md`](../decisions.md).
 | LLM integration | Plain Anthropic SDK + a single tool call (`tool_choice: auto` plus an instruction) | Multi-step agent flows. Then use a LangGraph graph with an interrupt-based human node. |
 | Simulator | PyLabRobot simulated backend | Swap for a real backend per instrument |
 | Delivery | `v*` tag publishes a smoke-tested wheel and sdist to GitHub Releases (D10) | Containerizing. Then also push an image to GHCR. |
+| Readout ingestion | A polling watcher that is an API client; `readout_id` = SHA-256 of the file (D11) | Many files a second, or a reader that can push results. Then use OS file events or a message queue. |
 
 ## 11. Out of scope, in production priority order
 
 1. Exercise `UNKNOWN_OUTCOME` (reply timeout → `NEEDS_HUMAN`, no auto-retry).
 2. Async execution (`202` + polling) and a separate edge-agent process per instrument.
 3. Containerize with one Dockerfile, then Compose and Kubernetes.
-4. A mock plate reader, file ingestion and per-well lineage (well → command → run).
+4. A plate heatmap and lineage UI on the dashboard, and parsers for real vendor plate-reader exports. (The mock reader, file ingestion and per-well lineage were added by D11.)
 5. Auth, operator identity on `clear`, and a scheduler (e.g. Cellario or Green Button Go) between the orchestrator and devices.
 
 ## 12. Honesty rules
